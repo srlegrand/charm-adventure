@@ -1,0 +1,66 @@
+// Charm Adventure in Tomato Land - gameplay tuning.
+// Edit and save while the game runs: changes apply within half a second.
+// Units: pixels and seconds. The screen is 540 units tall.
+(
+    player: (
+        width: 26.0,
+        height: 50.0,
+        max_hp: 5,
+
+        run_speed: 300.0,
+        sprint_speed: 440.0,       // hold dash on the ground after a dash
+        ground_accel: 4000.0,
+        air_accel: 3000.0,
+
+        gravity: 2200.0,
+        max_fall_speed: 900.0,
+        jump_speed: 760.0,
+        jump_cut: 0.45,            // upward speed kept when jump is released early
+        coyote_time: 0.08,
+        jump_buffer: 0.10,
+        air_jumps: 1,
+        air_jump_speed: 680.0,
+
+        dash_speed: 760.0,
+        dash_time: 0.20,
+        dash_cooldown: 0.15,
+
+        wall_slide_speed: 140.0,
+        wall_jump_x: 360.0,
+        wall_jump_y: 700.0,
+        wall_jump_lock: 0.14,      // seconds without steering after a wall jump
+
+        attack_time: 0.14,
+        attack_cooldown: 0.32,
+        attack_reach: 62.0,
+        attack_thickness: 44.0,
+        attack_damage: 5,
+        attack_recoil: 160.0,
+        pogo_speed: 640.0,
+
+        invuln_time: 1.1,
+        hitstun_time: 0.22,
+        knockback_x: 320.0,
+        knockback_y: 420.0,
+    ),
+    enemies: {
+        "cherry": (
+            width: 30.0, height: 28.0, hp: 10, speed: 70.0,
+            contact_damage: 1, knockback: 260.0,
+            behaviour: Walker,
+            color: (0.95, 0.25, 0.2),
+        ),
+        "beefsteak": (
+            width: 54.0, height: 48.0, hp: 30, speed: 40.0,
+            contact_damage: 1, knockback: 120.0,
+            behaviour: Walker,
+            color: (0.75, 0.12, 0.1),
+        ),
+        "hopper": (
+            width: 34.0, height: 32.0, hp: 15, speed: 170.0,
+            contact_damage: 1, knockback: 220.0,
+            behaviour: Hopper(jump_speed: 620.0, interval: 1.4),
+            color: (1.0, 0.5, 0.15),
+        ),
+    },
+)

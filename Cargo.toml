@@ -1,0 +1,23 @@
+[package]
+name = "charm_adventure"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { version = "0.19.1", default-features = false, features = [
+    "default_app", "default_platform", "2d_bevy_render", "ui_api", "ui_bevy_render",
+] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.10"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
