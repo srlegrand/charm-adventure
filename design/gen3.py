@@ -41,20 +41,22 @@ def hero():
 def charm():
     sk = '#a9683f'; hair = '#2a1024'
     return f'''
-    <path d="M56,-176 L68,-190 L196,6Z" fill="#eaf6ff" {S(4)}/><path d="M66,-180 L188,0" stroke="#9fd0ea" stroke-width="2.5"/>
-    <path d="M-12,-130 L2,-130 L-18,0Z M8,-130 L22,-130 L24,0Z" fill="url(#leg)" {S(4)}/>
-    <path d="M-8,-352 C-78,-360 -96,-292 -78,-248 C-96,-214 -100,-176 -134,-150 C-86,-150 -58,-186 -48,-236 L48,-236 C62,-200 56,-166 86,-140 C108,-190 94,-246 76,-270 C92,-326 44,-358 -8,-352Z" fill="{hair}" {S()}/>
-    <path d="M-12,-240 C-40,-200 -86,-150 -104,-116 C-74,-100 -46,-112 -24,-96 C-2,-112 22,-112 42,-96 C62,-112 84,-104 104,-116 C86,-150 40,-200 12,-240Z" fill="url(#ch)" {S()}/>
-    <path d="M12,-240 C40,-200 86,-150 104,-116 C84,-104 62,-112 42,-96 C40,-150 30,-200 12,-240Z" fill="{P}" opacity=".3"/>
-    <path d="M-24,-96 C-22,-150 -14,-200 -4,-236 M42,-96 C36,-150 22,-200 8,-236" stroke="{P}" stroke-width="3" fill="none" opacity=".6"/>
-    {arm("M20,-214 L58,-196 L62,-180", 7)}
-    <path d="M40,-170 q24,-34 44,-6" fill="none" stroke="{P}" stroke-width="12" stroke-linecap="round"/><path d="M40,-170 q24,-34 44,-6" fill="none" stroke="#f2b24a" stroke-width="6" stroke-linecap="round"/>
-    <path d="M52,-196 L28,-232" stroke="{P}" stroke-width="10" stroke-linecap="round"/><circle cx="24" cy="-238" r="9" fill="none" stroke="{P}" stroke-width="5"/><circle cx="24" cy="-238" r="9" fill="none" stroke="#f2b24a" stroke-width="2"/>
-    <path d="M-40,-292 C-44,-346 44,-346 40,-292 C38,-264 16,-248 0,-232 C-16,-248 -38,-264 -40,-292Z" fill="{sk}" {S()}/>
-    <path d="M-44,-286 C-50,-356 50,-356 44,-286 C30,-322 -2,-330 -44,-286Z" fill="{hair}" {S(4)}/>
-    <path d="M18,-338 C44,-326 50,-290 60,-250" stroke="#d9c08a" stroke-width="7" fill="none" stroke-linecap="round"/>
-    {almond(-17,-284,13,9,22,'#fff',False)}{almond(17,-284,13,9,158,'#fff',False)}
-    {spark(-100,-330,1)}{spark(-120,-296,.6)}{spark(110,-250,.7,'#e58a8a')}'''
+    <path d="M-20,-200 L0,-200 L-30,0Z M6,-200 L26,-200 L40,0Z" fill="url(#leg)" {S(4)}/>
+    <path d="M-10,-360 L10,-360 L8,-330 L-8,-330Z" fill="{DK}" {S(4)}/>
+    <path d="M-30,-486 C-64,-470 -66,-410 -56,-372 C-62,-330 -58,-290 -78,-262 C-50,-268 -34,-300 -34,-340 L34,-340 C34,-300 44,-262 70,-240 C76,-290 60,-340 56,-372 C66,-410 64,-470 30,-486Z" fill="{hair}" {S()}/>
+    <path d="M-14,-346 C-34,-300 -70,-226 -92,-176 C-70,-160 -48,-176 -30,-158 C-10,-176 12,-176 30,-158 C48,-176 70,-160 92,-176 C70,-226 34,-300 14,-346Z" fill="url(#ch)" {S()}/>
+    <path d="M14,-346 C34,-300 70,-226 92,-176 C70,-160 48,-176 30,-158 C30,-220 26,-290 14,-346Z" fill="{P}" opacity=".3"/>
+    <path d="M-30,-158 C-28,-220 -18,-290 -6,-342" stroke="{P}" stroke-width="3" fill="none" opacity=".6"/>
+    <path d="M62,-262 L70,-274 L170,4Z" fill="#eaf6ff" {S(4)}/><path d="M70,-262 L164,-4" stroke="#9fd0ea" stroke-width="2.5"/>
+    {arm("M22,-322 L60,-296 L62,-272", 8)}
+    <path d="M44,-258 q22,-30 42,-8" fill="none" stroke="{P}" stroke-width="12" stroke-linecap="round"/><path d="M44,-258 q22,-30 42,-8" fill="none" stroke="#f2b24a" stroke-width="6" stroke-linecap="round"/>
+    <path d="M60,-278 L48,-312" stroke="{P}" stroke-width="10" stroke-linecap="round"/><circle cx="46" cy="-320" r="9" fill="none" stroke="{P}" stroke-width="5"/><circle cx="46" cy="-320" r="9" fill="none" stroke="#f2b24a" stroke-width="2"/>
+    {arm("M-22,-322 L-56,-280 L-40,-246", 8)}<circle cx="-40" cy="-246" r="10" fill="{sk}" {S(4)}/>
+    <path d="M-46,-428 C-52,-506 52,-506 46,-428 C44,-398 22,-380 0,-352 C-22,-380 -44,-398 -46,-428Z" fill="{sk}" {S()}/>
+    <path d="M-50,-420 C-58,-514 58,-514 50,-420 C34,-462 -4,-472 -50,-420Z" fill="{hair}" {S(4)}/>
+    <path d="M22,-494 C46,-476 50,-440 58,-390" stroke="#d9c08a" stroke-width="7" fill="none" stroke-linecap="round"/>
+    {almond(-20,-420,15,10,24,'#fff',False)}{almond(20,-420,15,10,156,'#fff',False)}
+    {spark(-90,-470,1)}{spark(-106,-436,.6)}{spark(96,-400,.7,'#e58a8a')}'''
 
 def louis():
     f = '#e9c896'; d = '#c79c63'
@@ -114,7 +116,7 @@ def label(x, y, t, s, c='#8a2a3a'):
             f'<text x="{x}" y="{y+24}" text-anchor="middle" font-size="15" fill="#8a6a70">{s}</text>')
 p = [DEFS, '<rect width="1800" height="1300" fill="#faf5ee"/>',
      g(330, 610, hero(), .89), label(330, 670, 'SIMON', 'player 1, the crowbar', '#b23a2a'),
-     g(900, 610, charm(), 1.26), label(900, 670, 'CHARM', 'player 2, the sword', P),
+     g(900, 610, charm(), .89), label(900, 670, 'CHARM', 'player 2, the sword', P),
      g(1420, 610, louis(), 1.05), label(1440, 670, 'LOUIS', 'called with Y', '#a8683f')]
 xs = [100, 300, 490, 740, 910, 1120, 1370, 1620]
 for (n, s, body), x in zip(TOMS, xs):
