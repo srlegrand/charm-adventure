@@ -19,8 +19,9 @@ cd charm-adventure && ./charm_adventure --fullscreen
 |---|---|---|
 | Move | Left stick / D-pad | Arrows / WASD |
 | Jump | A | Space / Z |
-| Attack | X | X / J |
-| Dash (hold to sprint) | RT | C / K / Left Shift |
+| Attack | X | X / J / left click |
+| Dash (hold to sprint) | RT | C / K / Left Shift / right click |
+| Character chooser | View / Select | Tab |
 | Restart, fullscreen, quit | | R, F11, Esc |
 
 ## Editing

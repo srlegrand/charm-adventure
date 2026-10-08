@@ -1,2 +1,7 @@
 target
 dist
+design/trace/*.npy
+design/trace/g*.png
+design/trace/r*.png
+design/trace/ts.png
+design/trace/c.png

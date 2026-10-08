@@ -50,6 +50,11 @@ struct Rig {
 /// Which character player 1 is shown as (0 Simon, 1 Charm). Tab swaps.
 #[derive(Resource)]
 struct Skin(usize);
+/// Character chooser. While open the game is paused.
+#[derive(Resource)]
+struct Chooser(bool);
+#[derive(Component)]
+struct ChooserText;
 
 #[derive(Deserialize)]
 struct RigFile {
@@ -121,7 +126,7 @@ fn main() {
     };
     let fullscreen = std::env::args().any(|a| a == "--fullscreen");
     let game = Game {
-        world: SimWorld::new(level, &tuning, 1),
+        world: settled(level, &tuning),
         tuning,
         input: default(),
         stamps: stamps(&dir),
@@ -143,6 +148,7 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .insert_resource(game)
         .insert_resource(Skin(0))
+        .insert_resource(Chooser(true))
         .init_resource::<Art>()
         .add_systems(Startup, setup)
         .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, hud, hotkeys).chain())
@@ -167,6 +173,13 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         Text::new(""),
         TextColor(Color::srgb(0.91, 0.89, 0.84)),
         Node { position_type: PositionType::Absolute, top: Val::Px(10.0), left: Val::Px(14.0), ..default() },
+    ));
+    commands.spawn((
+        ChooserText,
+        Text::new(""),
+        TextColor(Color::srgb(0.96, 0.89, 0.77)),
+        TextLayout::justify(Justify::Center),
+        Node { position_type: PositionType::Absolute, top: Val::Percent(22.0), width: Val::Percent(100.0), ..default() },
     ));
     for (file, factor, z) in [("sprites/bg/far.png", 0.12, -20.0), ("sprites/bg/mid.png", 0.35, -10.0)] {
         for i in 0..6 {
@@ -218,19 +231,19 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         let weapon = part("weapon", body_at, 0.03);
         commands.entity(body).add_children(&[back, head, weapon]);
         let swings = [rig.swing_side, rig.swing_up, rig.swing_down];
-        let root = commands.spawn((Rig { who, leg_b, leg_f, body, head, weapon, swings }, Transform::default(), Visibility::Hidden)).id();
+        let root = commands.spawn((Rig { who, leg_b, leg_f, body, head, weapon, swings }, Pose { v: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0], grounded: true, squash: 0.0 }, Transform::default(), Visibility::Hidden)).id();
         commands.entity(root).add_children(&[leg_b, leg_f, body]);
     }
 }
 
-fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut game: ResMut<Game>) {
+fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, pads: Query<&Gamepad>, mut game: ResMut<Game>) {
     let k = |codes: &[KeyCode]| codes.iter().any(|c| keys.pressed(*c));
     let mut i = sim::Input {
         x: k(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32 - k(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
         y: k(&[KeyCode::ArrowUp, KeyCode::KeyW]) as i8 as f32 - k(&[KeyCode::ArrowDown, KeyCode::KeyS]) as i8 as f32,
         jump: k(&[KeyCode::Space, KeyCode::KeyZ]),
-        attack: k(&[KeyCode::KeyX, KeyCode::KeyJ]),
-        dash: k(&[KeyCode::KeyC, KeyCode::KeyK, KeyCode::ShiftLeft]),
+        attack: k(&[KeyCode::KeyX, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left),
+        dash: k(&[KeyCode::KeyC, KeyCode::KeyK, KeyCode::ShiftLeft]) || mouse.pressed(MouseButton::Right),
         call_dog: k(&[KeyCode::KeyF]),
     };
     for pad in &pads {
@@ -254,15 +267,27 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut game: 
     game.input = i;
 }
 
-fn tick(mut game: ResMut<Game>) {
+fn tick(mut game: ResMut<Game>, chooser: Res<Chooser>) {
+    if chooser.0 {
+        return;
+    }
     let g = &mut *game;
     g.world.step(&[g.input], &g.tuning);
+}
+
+/// A new world, run for a moment so everyone starts standing on the ground.
+fn settled(level: sim::Level, tuning: &Tuning) -> SimWorld {
+    let mut world = SimWorld::new(level, tuning, 1);
+    for _ in 0..20 {
+        world.step(&[sim::Input::default()], tuning);
+    }
+    world
 }
 
 fn restart(game: &mut Game) {
     match load(&game.dir) {
         Ok((tuning, level)) => {
-            game.world = SimWorld::new(level, &tuning, 1);
+            game.world = settled(level, &tuning);
             game.tuning = tuning;
             game.geo_dirty = true;
             game.status.clear();
@@ -358,19 +383,29 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, 
     }
 }
 
+/// Smoothed pose values for one rig, so poses snap in fast but never pop.
+/// Order: back leg, front leg, body, head, weapon, root tilt, stretch x, stretch y.
+#[derive(Component)]
+struct Pose {
+    v: [f32; 8],
+    grounded: bool,
+    squash: f32,
+}
+
 fn animate(
     game: Res<Game>,
     skin: Res<Skin>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
-    mut rigs: Query<(&Rig, &mut Transform, &mut Visibility), Without<PartPivot>>,
+    mut rigs: Query<(&Rig, &mut Pose, &mut Transform, &mut Visibility), Without<PartPivot>>,
     mut parts: Query<&mut Transform, With<PartPivot>>,
 ) {
     let a = fixed.overstep_fraction();
     let t = &game.tuning.player;
     let w = &game.world;
     let now = time.elapsed_secs();
-    for (rig, mut tf, mut vis) in &mut rigs {
+    let dt = time.delta_secs();
+    for (rig, mut pose, mut tf, mut vis) in &mut rigs {
         let Some(p) = w.players.first().filter(|_| rig.who == skin.0) else {
             *vis = Visibility::Hidden;
             continue;
@@ -379,37 +414,76 @@ fn animate(
         *vis = if blink { Visibility::Hidden } else { Visibility::Inherited };
         let (x, y) = (p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a);
         let running = p.on_ground && p.vx.abs() > 30.0;
-        let stride = (now * if p.sprinting { 20.0 } else { 15.0 }).sin();
-        // (back leg, front leg, body lean, head) in radians, figure facing right
-        let (mut lb, mut lf, mut body, mut head) = (0.0, 0.0, (now * 2.0).sin() * 0.015, (now * 2.0 + 1.0).sin() * 0.02);
+        let stride = (now * if p.sprinting { 22.0 } else { 16.0 }).sin();
+        let fall = (p.vy.abs() / t.max_fall_speed).min(1.0);
+        let attacking = p.attack_t > 0.0;
+
+        // Target pose. Angles in radians for a figure facing right: negative leans forward.
+        // [back leg, front leg, body, head, weapon, root tilt, stretch x, stretch y]
+        let breathe = (now * 2.0).sin();
+        let mut g = [0.14, -0.14, breathe * 0.03, breathe * 0.03, breathe * 0.05, 0.0, 1.0, 1.0 + breathe * 0.012];
         let mut bob = 0.0;
+        let mut snap = 26.0;
         if p.dash_t > 0.0 {
-            (lb, lf, body, head) = (-1.0, -0.8, -0.55, 0.25);
+            g = [-0.55, -0.2, -0.25, 0.75, -0.9, -1.05, 0.8, 1.25];
+            snap = 70.0;
         } else if p.hitstun > 0.0 {
-            (lb, lf, body, head) = (0.5, 0.7, 0.4, 0.2);
+            g = [1.1, 1.35, 0.9, 0.6, 1.4, 0.45, 1.1, 0.9];
+            snap = 70.0;
         } else if !p.on_ground && p.wall != 0 && p.vy < 0.0 {
-            (lb, lf, body, head) = (0.35, -0.25, 0.12, -0.1);
+            g = [0.85, -0.55, 0.32, -0.45, 0.9, 0.12, 0.95, 1.05];
         } else if !p.on_ground && p.vy > 0.0 {
-            (lb, lf, body, head) = (-0.45, 0.55, -0.1, -0.08);
+            g = [-1.0, 1.1, -0.3, -0.25, 0.7, -0.12, 0.86, 1.0 + 0.22 * fall];
         } else if !p.on_ground {
-            (lb, lf, body, head) = (0.4, -0.35, 0.08, 0.1);
+            g = [0.85, -0.9, 0.3, 0.4, -1.3, 0.1, 0.9, 1.0 + 0.18 * fall];
         } else if running {
-            (lb, lf, body, head) = (stride * 0.6, -stride * 0.6, if p.sprinting { -0.3 } else { -0.14 }, 0.06);
-            bob = stride.abs() * 1.5;
+            let lean = if p.sprinting { -0.62 } else { -0.4 };
+            g = [stride * 1.05, -stride * 1.05, lean, -lean * 0.6, -0.5 + stride * 0.35, if p.sprinting { -0.12 } else { -0.05 }, 1.0, 1.0];
+            bob = stride.abs() * 4.0;
+            snap = 40.0;
         }
-        let mut weapon = (now * 2.0).sin() * 0.03 + if running { -0.25 * p.facing.abs() } else { 0.0 };
-        if p.attack_t > 0.0 {
+        if attacking {
+            let (lb, lf, body, tilt, sy) = match p.attack_dir {
+                AttackDir::Side => (-0.75, 0.85, -0.55, -0.1, 1.0),
+                AttackDir::Up => (0.25, -0.25, 0.3, 0.08, 1.14),
+                AttackDir::Down => (1.15, 1.3, -0.75, -0.35, 0.92),
+            };
+            if p.on_ground || p.attack_dir != AttackDir::Side {
+                (g[0], g[1]) = (lb, lf);
+            }
+            (g[2], g[3], g[5], g[7]) = (body, -body * 0.5, tilt, sy);
+            snap = 80.0;
+        }
+
+        // Landing squash.
+        if p.on_ground && !pose.grounded {
+            pose.squash = 1.0;
+        }
+        pose.grounded = p.on_ground;
+        pose.squash = (pose.squash - dt * 7.0).max(0.0);
+
+        let k = 1.0 - (-snap * dt).exp();
+        for i in 0..8 {
+            pose.v[i] += (g[i] - pose.v[i]) * k;
+        }
+        // The swing is driven directly, with an eased, widened arc; afterwards it settles back slowly.
+        if attacking {
             let u = 1.0 - p.attack_t / t.attack_time.max(0.001);
+            let eased = 1.0 - (1.0 - u).powi(3);
             let (from, to) = rig.swings[match p.attack_dir {
                 AttackDir::Side => 0,
                 AttackDir::Up => 1,
                 AttackDir::Down => 2,
             }];
-            weapon = (from + (to - from) * u).to_radians() - body;
+            let wide = (to - from).signum() * 35.0;
+            pose.v[4] = ((from - wide) + (to + wide - (from - wide)) * eased).to_radians() - pose.v[2];
         }
+        let v = pose.v;
+        let sq = pose.squash;
         tf.translation = Vec3::new(x, y - t.height / 2.0 + bob, 2.0);
-        tf.scale = Vec3::new(p.facing, 1.0, 1.0);
-        for (e, angle) in [(rig.leg_b, lb), (rig.leg_f, lf), (rig.body, body), (rig.head, head - body * 0.5), (rig.weapon, weapon)] {
+        tf.rotation = Quat::from_rotation_z(v[5] * p.facing);
+        tf.scale = Vec3::new(p.facing * v[6] * (1.0 + 0.22 * sq), v[7] * (1.0 - 0.28 * sq), 1.0);
+        for (e, angle) in [(rig.leg_b, v[0] - v[5] * 0.5), (rig.leg_f, v[1] - v[5] * 0.5), (rig.body, v[2]), (rig.head, v[3]), (rig.weapon, v[4])] {
             if let Ok(mut part) = parts.get_mut(e) {
                 part.rotation = Quat::from_rotation_z(angle);
             }
@@ -495,23 +569,72 @@ fn camera(
     }
 }
 
-fn hud(game: Res<Game>, mut text: Query<&mut Text, With<Hud>>) {
+fn hud(
+    game: Res<Game>,
+    skin: Res<Skin>,
+    chooser: Res<Chooser>,
+    pads: Query<&Gamepad>,
+    mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
+    mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
+) {
     let (Ok(mut text), Some(p)) = (text.single_mut(), game.world.players.first()) else { return };
+    let pad = match pads.iter().count() {
+        0 => "no controller".to_string(),
+        n => format!("{n} controller{}", if n == 1 { "" } else { "s" }),
+    };
     let line = format!(
-        "HP {}/{}   Tomatoes {}   {}\n{}",
-        p.hp, game.tuning.player.max_hp, game.world.enemies.len(), game.world.level.name, game.status
+        "HP {}/{}   Tomatoes {}   {}   {}\n{}",
+        p.hp, game.tuning.player.max_hp, game.world.enemies.len(), game.world.level.name, pad, game.status
     );
     if text.0 != line {
         text.0 = line;
     }
+    if let Ok(mut pick) = pick.single_mut() {
+        let want = if chooser.0 {
+            let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
+            format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nLeft / Right to choose\nA, Space or Enter to start")
+        } else {
+            String::new()
+        };
+        if pick.0 != want {
+            pick.0 = want;
+        }
+    }
 }
 
-fn hotkeys(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, mut skin: ResMut<Skin>, mut window: Query<&mut Window, With<PrimaryWindow>>, mut exit: MessageWriter<AppExit>) {
+fn hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    mut game: ResMut<Game>,
+    mut skin: ResMut<Skin>,
+    mut chooser: ResMut<Chooser>,
+    mut held: Local<bool>,
+    mut window: Query<&mut Window, With<PrimaryWindow>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let pad = |b: GamepadButton| pads.iter().any(|p| p.just_pressed(b));
+    // Tab or the controller's Select / View button opens the chooser.
+    if keys.just_pressed(KeyCode::Tab) || pad(GamepadButton::Select) {
+        chooser.0 = !chooser.0;
+    }
+    if chooser.0 {
+        let stick = pads.iter().map(|p| p.left_stick().x).fold(0.0f32, |a, b| if b.abs() > a.abs() { b } else { a });
+        let flick = stick.abs() > 0.6 && !*held;
+        *held = stick.abs() > 0.4;
+        let left = keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyA) || pad(GamepadButton::DPadLeft) || (flick && stick < 0.0);
+        let right = keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) || pad(GamepadButton::DPadRight) || (flick && stick > 0.0);
+        if left {
+            skin.0 = 0;
+        }
+        if right {
+            skin.0 = 1;
+        }
+        if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || pad(GamepadButton::South) || pad(GamepadButton::Start) {
+            chooser.0 = false;
+        }
+    }
     if keys.just_pressed(KeyCode::KeyR) {
         restart(&mut game);
-    }
-    if keys.just_pressed(KeyCode::Tab) {
-        skin.0 = 1 - skin.0;
     }
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
