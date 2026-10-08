@@ -109,6 +109,9 @@ pub struct Level {
     pub bounds: Rect,
     pub spawns: Vec<(f32, f32)>,
     pub solids: Vec<Rect>,
+    /// Thorns: touching one costs a mask and returns the player to the last safe ground.
+    #[serde(default)]
+    pub hazards: Vec<Rect>,
     pub enemies: Vec<EnemySpawn>,
 }
 
@@ -145,6 +148,8 @@ pub struct Player {
     pub attack_dir: AttackDir,
     pub invuln: f32,
     pub hitstun: f32,
+    pub safe_x: f32,
+    pub safe_y: f32,
     pub prev: Input,
 }
 
@@ -220,7 +225,7 @@ impl Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
             air_dash_ready: true, dash_t: 0.0, dash_cd: 0.0, sprinting: false, wall_lock: 0.0,
-            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0,
+            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, safe_x: x, safe_y: y,
             prev: Input::default(),
         }
     }
@@ -391,9 +396,22 @@ impl World {
                 p.sprinting = p.sprinting && p.dash_t > 0.0;
             }
 
-            // Fell out of the level: lose a mask and return to the spawn point.
-            if p.y < bounds.1 - 200.0 {
-                let s = self.level.spawns[i % self.level.spawns.len()];
+            // Remember the last spot where both feet were on solid ground, away from thorns.
+            let feet = p.y - t.height / 2.0 - 2.0;
+            let danger = Rect::centered(p.x, p.y, t.width + 80.0, t.height + 20.0);
+            if ground
+                && solids.iter().any(|s| s.contains(p.x - t.width / 2.0, feet))
+                && solids.iter().any(|s| s.contains(p.x + t.width / 2.0, feet))
+                && !self.level.hazards.iter().any(|h| h.overlaps(&danger))
+            {
+                (p.safe_x, p.safe_y) = (p.x, p.y);
+            }
+            // Thorns or a fall out of the level: lose a mask and return to safe ground.
+            let body = p.body(t);
+            if p.y < bounds.1 - 200.0 || self.level.hazards.iter().any(|h| h.overlaps(&body)) {
+                let s = (p.safe_x, p.safe_y);
+                p.dash_t = 0.0;
+                p.attack_t = 0.0;
                 (p.x, p.y, p.vx, p.vy) = (s.0, s.1, 0.0, 0.0);
                 (p.px, p.py) = (p.x, p.y);
                 p.hp -= 1;
@@ -529,6 +547,7 @@ mod tests {
             bounds: Rect(0.0, 0.0, 2000.0, 1000.0),
             spawns: vec![(500.0, 100.0)],
             solids: vec![Rect(0.0, 0.0, 2000.0, 40.0), Rect(900.0, 40.0, 40.0, 600.0)],
+            hazards: vec![],
             enemies: vec![],
         };
         let mut w = World::new(level, &tuning, 1);
@@ -540,7 +559,7 @@ mod tests {
 
     #[test]
     fn shipped_assets_parse() {
-        load_level(include_str!("../assets/levels/test_room.ron")).unwrap();
+        load_level(include_str!("../assets/levels/rootway.ron")).unwrap();
     }
 
     #[test]

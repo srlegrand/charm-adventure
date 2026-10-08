@@ -2,7 +2,7 @@
 
 Two-player co-op platformer for the Steam Deck, written in Rust on Bevy.
 
-Status: milestone 1, movement slice. One placeholder player, a test room, three tomato types.
+Status: milestone 1, movement slice. Simon and Charm as cutout rigs (Tab swaps), one dark cave level, three tomato types.
 
 ## Download
 
@@ -26,7 +26,7 @@ cd charm-adventure && ./charm_adventure --fullscreen
 ## Editing
 
 - `assets/config/tuning.ron`: player and tomato attributes. Saving applies within half a second.
-- `assets/levels/test_room.ron`: platforms, spawns, tomato placement. Saving restarts the room.
+- `assets/levels/rootway.ron`: platforms, spawns, tomato placement. Saving restarts the room.
 
 ## Build from source
 

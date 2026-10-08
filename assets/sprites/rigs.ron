@@ -1,0 +1,43 @@
+// Written by design/export.py. Pivots are PNG pixels. Angles are degrees, for a figure facing right.
+(
+    canvas: (240, 280),
+    origin: (120, 265),
+    units_per_px: 0.3320,
+    characters: {
+        "simon": (
+            parts: {
+                "leg_b": (115.0, 165.0),
+                "leg_f": (128.0, 165.0),
+                "body": (120.0, 165.0),
+                "weapon": (95.0, 106.0),
+                "head": (120.0, 87.0),
+            },
+            swing_side: (-150, -250),
+            swing_up: (-120, -210),
+            swing_down: (60, -20),
+        ),
+        "charm": (
+            parts: {
+                "leg_b": (115.0, 165.0),
+                "leg_f": (128.0, 165.0),
+                "back": (120.0, 87.0),
+                "body": (120.0, 165.0),
+                "weapon": (131.0, 104.0),
+                "head": (120.0, 87.0),
+            },
+            swing_side: (120, 40),
+            swing_up: (180, 110),
+            swing_down: (-50, 20),
+        ),
+    },
+    enemies: {
+        "cherry": (file: "sprites/tomatoes/cherry.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5625),
+        "beefsteak": (file: "sprites/tomatoes/beefsteak.png", size: (240, 240), origin: (120, 228), units_per_px: 0.9310),
+        "hopper": (file: "sprites/tomatoes/hopper.png", size: (240, 240), origin: (120, 228), units_per_px: 1.4167),
+        "plum": (file: "sprites/tomatoes/plum.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
+        "greenie": (file: "sprites/tomatoes/greenie.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
+        "vine_flyer": (file: "sprites/tomatoes/vine_flyer.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
+        "sun_dried": (file: "sprites/tomatoes/sun_dried.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
+        "big_tom": (file: "sprites/tomatoes/big_tom.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
+    },
+)
