@@ -113,8 +113,8 @@ def label(x, y, t, s, c='#8a2a3a'):
     return (f'<text x="{x}" y="{y}" text-anchor="middle" font-size="30" font-weight="800" letter-spacing="3" fill="{c}">{t}</text>'
             f'<text x="{x}" y="{y+24}" text-anchor="middle" font-size="15" fill="#8a6a70">{s}</text>')
 p = [DEFS, '<rect width="1800" height="1300" fill="#faf5ee"/>',
-     g(330, 610, hero(), 1.05), label(330, 670, 'THE CROWBAR', 'player 1', '#b23a2a'),
-     g(900, 610, charm(), 1.05), label(900, 670, 'CHARM', 'player 2, the sword', P),
+     g(330, 610, hero(), .89), label(330, 670, 'SIMON', 'player 1, the crowbar', '#b23a2a'),
+     g(900, 610, charm(), 1.26), label(900, 670, 'CHARM', 'player 2, the sword', P),
      g(1420, 610, louis(), 1.05), label(1440, 670, 'LOUIS', 'called with Y', '#a8683f')]
 xs = [100, 300, 490, 740, 910, 1120, 1370, 1620]
 for (n, s, body), x in zip(TOMS, xs):
