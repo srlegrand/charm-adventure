@@ -1,0 +1,47 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir -p dist/charm-adventure
+          cp target/release/charm_adventure dist/charm-adventure/
+          cp -r assets dist/charm-adventure/
+          tar -C dist -czf charm-adventure-steamdeck.tar.gz charm-adventure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: charm-adventure-steamdeck
+          path: charm-adventure-steamdeck.tar.gz
+      - name: Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v0.1.${{ github.run_number }}" charm-adventure-steamdeck.tar.gz \
+            --target "${{ github.sha }}" \
+            --title "Build ${{ github.run_number }}" \
+            --generate-notes --latest
