@@ -30,8 +30,12 @@
         wall_jump_y: 700.0,
         wall_jump_lock: 0.14,      // seconds without steering after a wall jump
 
-        attack_time: 0.14,
-        attack_cooldown: 0.32,
+        attack_time: 0.07,         // how long the drawn swing takes; the hit itself lands on the first tick
+        attack_cooldown: 0.26,
+        attack_buffer: 0.15,       // an early press still fires on the first possible tick
+        hitstop_hit: 2,            // ticks (1/60 s) the world freezes on a hit,
+        hitstop_kill: 5,           // on a kill,
+        hitstop_hurt: 8,           // and when the player is hurt
         // The weapon is a line from the shoulder swept through an arc; hits follow it exactly.
         weapon_length: 58.0,
         weapon_thickness: 7.0,     // half-thickness of that line
@@ -53,19 +57,19 @@
     // Only the round body above the legs hits and gets hit.
     enemies: {
         "cherry": (
-            width: 30.0, height: 41.0, leg: 13.5, hp: 10, speed: 70.0,
+            width: 30.0, height: 41.0, leg: 13.5, flowers: 3, hp: 10, speed: 70.0,
             contact_damage: 1, knockback: 260.0,
             behaviour: Walker,
             color: (0.95, 0.25, 0.2),
         ),
         "beefsteak": (
-            width: 54.0, height: 52.0, leg: 16.0, hp: 30, speed: 40.0,
+            width: 54.0, height: 52.0, leg: 16.0, flowers: 12, hp: 30, speed: 40.0,
             contact_damage: 1, knockback: 120.0,
             behaviour: Walker,
             color: (0.75, 0.12, 0.1),
         ),
         "hopper": (
-            width: 34.0, height: 56.0, leg: 25.0, hp: 15, speed: 170.0,
+            width: 34.0, height: 56.0, leg: 25.0, flowers: 5, hp: 15, speed: 170.0,
             contact_damage: 1, knockback: 220.0,
             behaviour: Hopper(jump_speed: 620.0, interval: 1.4),
             color: (1.0, 0.5, 0.15),

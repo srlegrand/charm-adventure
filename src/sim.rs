@@ -42,6 +42,12 @@ pub struct PlayerTuning {
     pub wall_jump_lock: f32,
     pub attack_time: f32,
     pub attack_cooldown: f32,
+    /// A press this long before the attack is ready still fires it on the first possible tick.
+    pub attack_buffer: f32,
+    /// Ticks the whole world freezes on a hit, a kill, and when the player is hurt.
+    pub hitstop_hit: u32,
+    pub hitstop_kill: u32,
+    pub hitstop_hurt: u32,
     /// The weapon is a line from the shoulder, swept through an arc. Hits follow it exactly.
     pub weapon_length: f32,
     /// Half-thickness of the weapon line.
@@ -80,6 +86,9 @@ pub struct EnemyTuning {
     /// Leg length under the round body. The body above the legs is what can be hit.
     #[serde(default)]
     pub leg: f32,
+    /// Flowers released when it dies.
+    #[serde(default)]
+    pub flowers: u32,
     pub behaviour: Behaviour,
     /// Placeholder colour (r, g, b) until sprites exist.
     pub color: (f32, f32, f32),
@@ -159,6 +168,11 @@ pub struct Player {
     pub attack_dir: AttackDir,
     pub invuln: f32,
     pub hitstun: f32,
+    pub attack_buf: f32,
+    /// A swing started this tick and has not been resolved yet.
+    pub swing_fresh: bool,
+    /// Flowers collected.
+    pub score: u32,
     pub safe_x: f32,
     pub safe_y: f32,
     pub prev: Input,
@@ -179,8 +193,16 @@ pub struct Enemy {
     pub timer: f32,
     pub stun: f32,
     pub flash: f32,
-    /// Id of the swing that last hit this enemy, so one swing hits once.
-    pub last_hit: u32,
+}
+
+/// Things that happened this tick, for the front end to dress up. They never feed back into the simulation.
+#[derive(Clone, Debug)]
+pub enum Event {
+    Swing { player: usize },
+    Dash { player: usize },
+    Hit { x: f32, y: f32, dir: f32 },
+    Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32 },
+    Hurt { x: f32, y: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +211,9 @@ pub struct World {
     pub players: Vec<Player>,
     pub enemies: Vec<Enemy>,
     pub tick: u32,
+    /// Ticks left of the freeze that follows a hit.
+    pub hitstop: u32,
+    pub events: Vec<Event>,
 }
 
 /// Distance from point (px, py) to the segment a-b.
@@ -270,7 +295,7 @@ impl Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
             air_dash_ready: true, dash_t: 0.0, dash_cd: 0.0, sprinting: false, wall_lock: 0.0,
-            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, safe_x: x, safe_y: y,
+            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, safe_x: x, safe_y: y,
             prev: Input::default(),
         }
     }
@@ -308,14 +333,15 @@ impl Player {
         Some((p, q, angle))
     }
 
-    /// The weapon line at three moments across the last tick, so a fast swing cannot skip a target.
-    fn weapon_sweep(&self, t: &PlayerTuning) -> Option<[((f32, f32), (f32, f32)); 3]> {
-        if self.attack_t <= 0.0 {
-            return None;
-        }
-        let now = self.swing_angle(t, self.attack_t);
-        let before = self.swing_angle(t, self.attack_t + DT);
-        Some([self.weapon_at(t, before), self.weapon_at(t, (before + now) / 2.0), self.weapon_at(t, now)])
+    /// The weapon line at steps across the whole arc. The hit lands on the first tick of the swing,
+    /// everywhere the arc will pass; the drawn swing then catches up within a few frames.
+    fn weapon_arc(&self, t: &PlayerTuning) -> [((f32, f32), (f32, f32)); 9] {
+        let (from, to) = match self.attack_dir {
+            AttackDir::Side => t.swing_side,
+            AttackDir::Up => t.swing_up,
+            AttackDir::Down => t.swing_down,
+        };
+        std::array::from_fn(|i| self.weapon_at(t, from + (to - from) * i as f32 / 8.0))
     }
 
     /// The body as an upright capsule: a centre line and a radius.
@@ -345,16 +371,36 @@ impl World {
                 let t = tuning.enemies.get(&s.kind)?;
                 Some(Enemy {
                     kind: s.kind.clone(), x: s.x, y: s.y, px: s.x, py: s.y, vx: 0.0, vy: 0.0, dir: -1.0,
-                    hp: t.hp, on_ground: false, timer: 0.0, stun: 0.0, flash: 0.0, last_hit: 0,
+                    hp: t.hp, on_ground: false, timer: 0.0, stun: 0.0, flash: 0.0,
                 })
             })
             .collect();
-        World { level, players, enemies, tick: 0 }
+        World { level, players, enemies, tick: 0, hitstop: 0, events: Vec::new() }
     }
 
     pub fn step(&mut self, inputs: &[Input], tuning: &Tuning) {
-        self.tick += 1;
+        self.events.clear();
         let t = &tuning.player;
+        // Hitstop: everything holds still, but presses made during the freeze are kept.
+        if self.hitstop > 0 {
+            self.hitstop -= 1;
+            for (i, p) in self.players.iter_mut().enumerate() {
+                let inp = inputs.get(i).copied().unwrap_or_default();
+                if inp.jump && !p.prev.jump {
+                    p.jump_buf = t.jump_buffer;
+                }
+                if inp.attack && !p.prev.attack {
+                    p.attack_buf = t.attack_buffer;
+                }
+                (p.px, p.py) = (p.x, p.y);
+                p.prev = inp;
+            }
+            for e in self.enemies.iter_mut() {
+                (e.px, e.py) = (e.x, e.y);
+            }
+            return;
+        }
+        self.tick += 1;
         let solids = &self.level.solids;
         let bounds = self.level.bounds;
 
@@ -366,7 +412,7 @@ impl World {
             let attack_pressed = pressed(inp.attack, p.prev.attack);
             p.px = p.x;
             p.py = p.y;
-            for timer in [&mut p.coyote, &mut p.jump_buf, &mut p.dash_cd, &mut p.wall_lock, &mut p.attack_cd, &mut p.attack_t, &mut p.invuln, &mut p.hitstun] {
+            for timer in [&mut p.coyote, &mut p.jump_buf, &mut p.dash_cd, &mut p.wall_lock, &mut p.attack_cd, &mut p.attack_t, &mut p.invuln, &mut p.hitstun, &mut p.attack_buf] {
                 *timer = (*timer - DT).max(0.0);
             }
             let control = p.hitstun <= 0.0;
@@ -374,6 +420,9 @@ impl World {
 
             if jump_pressed {
                 p.jump_buf = t.jump_buffer;
+            }
+            if attack_pressed {
+                p.attack_buf = t.attack_buffer;
             }
 
             // Dash
@@ -388,6 +437,7 @@ impl World {
                 }
                 p.dash_t = t.dash_time;
                 p.dash_cd = t.dash_time + t.dash_cooldown;
+                self.events.push(Event::Dash { player: i });
                 p.jumping = false;
             }
 
@@ -451,7 +501,10 @@ impl World {
             }
 
             // Attack
-            if control && attack_pressed && p.attack_cd <= 0.0 {
+            if control && p.attack_buf > 0.0 && p.attack_cd <= 0.0 {
+                p.attack_buf = 0.0;
+                p.swing_fresh = true;
+                self.events.push(Event::Swing { player: i });
                 p.attack_dir = if inp.y > 0.5 {
                     AttackDir::Up
                 } else if inp.y < -0.5 && !p.on_ground {
@@ -494,10 +547,13 @@ impl World {
                 (p.px, p.py) = (p.x, p.y);
                 p.hp -= 1;
                 p.invuln = t.invuln_time;
+                self.events.push(Event::Hurt { x: p.x, y: p.y });
             }
             if p.hp <= 0 {
                 let s = self.level.spawns[i % self.level.spawns.len()];
+                let score = p.score;
                 *p = Player::new(s.0, s.1, t);
+                p.score = score;
             }
             p.prev = inp;
         }
@@ -552,19 +608,27 @@ impl World {
 
         // Player swings against enemies, then enemy contact against players.
         for (i, p) in self.players.iter_mut().enumerate() {
-            if let Some(sweep) = p.weapon_sweep(t) {
-                // One id per swing per player: the tick the swing started on.
-                let started = self.tick - ((t.attack_time - p.attack_t) / DT).round() as u32;
-                let swing = started * 4 + i as u32 + 1;
+            if p.swing_fresh {
+                p.swing_fresh = false;
+                let sweep = p.weapon_arc(t);
+                let _ = i;
                 let mut connected = false;
                 for e in self.enemies.iter_mut() {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
                     let body = e.body(et);
-                    if e.last_hit == swing || !sweep.iter().any(|(a, b)| body.touches_line(*a, *b, t.weapon_thickness)) {
+                    if !sweep.iter().any(|(a, b)| body.touches_line(*a, *b, t.weapon_thickness)) {
                         continue;
                     }
-                    e.last_hit = swing;
                     e.hp -= t.attack_damage;
+                    let dir = if p.attack_dir == AttackDir::Side { p.facing } else { 0.0 };
+                    if e.hp <= 0 {
+                        p.score += et.flowers;
+                        self.hitstop = self.hitstop.max(t.hitstop_kill);
+                        self.events.push(Event::Kill { x: body.x, y: body.y, kind: e.kind.clone(), flowers: et.flowers, dir });
+                    } else {
+                        self.hitstop = self.hitstop.max(t.hitstop_hit);
+                        self.events.push(Event::Hit { x: body.x, y: body.y, dir });
+                    }
                     e.flash = 0.12;
                     e.stun = 0.25;
                     match p.attack_dir {
@@ -593,6 +657,8 @@ impl World {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
                     if e.hp > 0 && e.body(et).touches_line(a, b, r) {
                         p.hp -= et.contact_damage;
+                        self.hitstop = self.hitstop.max(t.hitstop_hurt);
+                        self.events.push(Event::Hurt { x: p.x, y: p.y });
                         p.invuln = t.invuln_time;
                         p.hitstun = t.hitstun_time;
                         p.dash_t = 0.0;
@@ -712,7 +778,7 @@ mod tests {
         let et = &t.enemies["cherry"];
         w.enemies.push(Enemy {
             kind: "cherry".into(), x: w.players[0].x + 20.0, y: 40.0 + et.height / 2.0, px: 0.0, py: 0.0, vx: 0.0, vy: 0.0,
-            dir: 1.0, hp: 1, on_ground: true, timer: 0.0, stun: 9.0, flash: 0.0, last_hit: 0,
+            dir: 1.0, hp: 1, on_ground: true, timer: 0.0, stun: 9.0, flash: 0.0,
         });
         w.players[0].y += 60.0;
         w.players[0].on_ground = false;

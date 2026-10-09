@@ -87,6 +87,47 @@ struct EnemyArt {
 #[derive(Resource, Default)]
 struct Art {
     enemies: HashMap<String, EnemyArt>,
+    slash: Handle<Image>,
+    flowers: Vec<Handle<Image>>,
+}
+
+/// Events from the simulation waiting to be dressed up, plus screen shake and the score shown so far.
+#[derive(Resource, Default)]
+struct Juice {
+    events: Vec<sim::Event>,
+    shake: f32,
+    shown_score: u32,
+    pulse: f32,
+    seed: u32,
+}
+impl Juice {
+    /// Small repeatable random number in 0..1.
+    fn rand(&mut self) -> f32 {
+        self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (self.seed >> 8) as f32 / 16777216.0
+    }
+}
+
+/// A short-lived particle: moves, slows, fades, then goes.
+#[derive(Component)]
+struct Fx {
+    vel: Vec2,
+    gravity: f32,
+    drag: f32,
+    life: f32,
+    max: f32,
+    spin: f32,
+    grow: f32,
+}
+/// The slash crescent stays on the player who swung.
+#[derive(Component)]
+struct OnPlayer(usize, Vec2);
+/// A flower: bursts out, then flies to the score.
+#[derive(Component)]
+struct Flower {
+    vel: Vec2,
+    age: f32,
+    delay: f32,
 }
 
 fn asset_dir() -> PathBuf {
@@ -152,8 +193,9 @@ fn main() {
         .insert_resource(Chooser(true))
         .init_resource::<Art>()
         .init_resource::<ShowShapes>()
+        .init_resource::<Juice>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, hud, hotkeys, shapes).chain())
+        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, juice, hud, hotkeys, shapes).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -200,6 +242,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
             std::process::exit(1);
         }
     };
+    art.slash = assets.load("sprites/fx/slash.png");
+    art.flowers = (0..6).map(|i| assets.load(format!("sprites/fx/flower{i}.png"))).collect();
     for (kind, e) in &rigs.enemies {
         let size = Vec2::new(e.size.0, e.size.1) * e.units_per_px;
         let lift = (e.origin.1 - e.size.1 / 2.0) * e.units_per_px;
@@ -269,12 +313,13 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
     game.input = i;
 }
 
-fn tick(mut game: ResMut<Game>, chooser: Res<Chooser>) {
+fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>) {
     if chooser.0 {
         return;
     }
     let g = &mut *game;
     g.world.step(&[g.input], &g.tuning);
+    juice.events.extend(g.world.events.drain(..));
 }
 
 /// A new world, run for a moment so everyone starts standing on the ground.
@@ -544,6 +589,8 @@ fn camera(
     window: Query<&Window, With<PrimaryWindow>>,
     mut cam: Query<&mut Transform, With<Camera2d>>,
     mut layers: Query<(&BgLayer, &mut Transform), Without<Camera2d>>,
+    mut juice: ResMut<Juice>,
+    mut base: Local<Option<Vec2>>,
 ) {
     let (Ok(mut cam), Some(p), Ok(win)) = (cam.single_mut(), game.world.players.first(), window.single()) else { return };
     let a = fixed.overstep_fraction();
@@ -556,8 +603,12 @@ fn camera(
         clamp(p.py + (p.y - p.py) * a + 50.0, b.1 + half_h, b.1 + b.3 - half_h),
     );
     let k = 1.0 - (-8.0 * time.delta_secs()).exp();
-    let pos = cam.translation.truncate().lerp(target, k);
-    cam.translation = pos.extend(cam.translation.z);
+    let pos = base.unwrap_or(target).lerp(target, k);
+    *base = Some(pos);
+    // Shake starts hard and dies away fast.
+    juice.shake = (juice.shake - time.delta_secs() * 40.0).max(0.0);
+    let jolt = Vec2::new(juice.rand() - 0.5, juice.rand() - 0.5) * 2.0 * juice.shake;
+    cam.translation = (pos + jolt).extend(cam.translation.z);
     let mid_y = b.1 + b.3 / 2.0;
     for (layer, mut tf) in &mut layers {
         let shift = (pos.x * layer.factor).rem_euclid(BG_SIZE.x * 2.0);
@@ -570,6 +621,7 @@ fn hud(
     game: Res<Game>,
     skin: Res<Skin>,
     chooser: Res<Chooser>,
+    juice: Res<Juice>,
     pads: Query<&Gamepad>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
@@ -580,8 +632,8 @@ fn hud(
         n => format!("{n} controller{}", if n == 1 { "" } else { "s" }),
     };
     let line = format!(
-        "HP {}/{}   Tomatoes {}   {}   {}\n{}",
-        p.hp, game.tuning.player.max_hp, game.world.enemies.len(), game.world.level.name, pad, game.status
+        "HP {}/{}   Flowers {}{}   Tomatoes {}   {}   {}\n{}",
+        p.hp, game.tuning.player.max_hp, juice.shown_score, if juice.pulse > 0.0 { " +" } else { "" }, game.world.enemies.len(), game.world.level.name, pad, game.status
     );
     if text.0 != line {
         text.0 = line;
@@ -682,5 +734,174 @@ fn shapes(show: Res<ShowShapes>, game: Res<Game>, mut gizmos: Gizmos) {
     }
     for h in &w.level.hazards {
         gizmos.rect_2d(Vec2::new(h.0 + h.2 / 2.0, h.1 + h.3 / 2.0), Vec2::new(h.2, h.3), Color::srgb(1.0, 0.4, 1.0));
+    }
+}
+
+/// Turns simulation events into slash trails, speed lines, sparks, bursts and flowers, and animates them.
+#[allow(clippy::too_many_arguments)]
+fn juice(
+    mut commands: Commands,
+    game: Res<Game>,
+    art: Res<Art>,
+    time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    cam: Query<&Transform, (With<Camera2d>, Without<Fx>, Without<Flower>)>,
+    mut juice: ResMut<Juice>,
+    mut fx: Query<(Entity, &mut Fx, &mut Transform, &mut Sprite, Option<&OnPlayer>), Without<Flower>>,
+    mut flowers: Query<(Entity, &mut Flower, &mut Transform), Without<Fx>>,
+) {
+    let dt = time.delta_secs();
+    let a = fixed.overstep_fraction();
+    let t = &game.tuning.player;
+    let w = &game.world;
+    let white = Color::srgb(1.0, 0.97, 0.9);
+    let at = |i: usize| w.players.get(i).map(|p| Vec2::new(p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a));
+    let spawn_fx = |commands: &mut Commands, sprite: Sprite, pos: Vec2, z: f32, rot: f32, fx: Fx| {
+        commands.spawn((sprite, Transform::from_translation(pos.extend(z)).with_rotation(Quat::from_rotation_z(rot)), fx)).id()
+    };
+    // Lines flying out from a point.
+    let burst = |commands: &mut Commands, juice: &mut Juice, pos: Vec2, n: usize, speed: f32, len: f32, col: Color, toward: f32| {
+        for _ in 0..n {
+            let ang = juice.rand() * std::f32::consts::TAU;
+            let dir = (Vec2::from_angle(ang) + Vec2::X * toward * 0.8).normalize_or_zero();
+            let sp = speed * (0.5 + juice.rand());
+            let life = 0.1 + juice.rand() * 0.12;
+            spawn_fx(commands, Sprite::from_color(col, Vec2::new(len * (0.6 + juice.rand()), 2.5)), pos + dir * 8.0, 4.0, dir.to_angle(), Fx { vel: dir * sp, gravity: 0.0, drag: 6.0, life, max: life, spin: 0.0, grow: -2.0 });
+        }
+    };
+
+    for ev in std::mem::take(&mut juice.events) {
+        match ev {
+            sim::Event::Swing { player } => {
+                let Some(p) = w.players.get(player) else { continue };
+                let (from, to) = match p.attack_dir {
+                    AttackDir::Side => t.swing_side,
+                    AttackDir::Up => t.swing_up,
+                    AttackDir::Down => t.swing_down,
+                };
+                let lift = if p.attack_dir == AttackDir::Down { -t.shoulder_height * 0.5 } else { t.shoulder_height };
+                let mid = ((from + to) / 2.0).to_radians();
+                let mut sprite = Sprite::from_image(art.slash.clone());
+                sprite.custom_size = Some(Vec2::splat((t.weapon_length + 10.0) / 117.0 * 256.0));
+                // The crescent art thickens toward its leading end; flip it so that end leads the swing.
+                sprite.flip_y = (to < from) != (p.facing < 0.0);
+                let rot = if p.facing < 0.0 { std::f32::consts::PI - mid } else { mid };
+                let offset = Vec2::new(0.0, lift);
+                let id = spawn_fx(&mut commands, sprite, Vec2::new(p.x, p.y) + offset, 3.5, rot, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.16, max: 0.16, spin: 0.0, grow: 0.5 });
+                commands.entity(id).insert(OnPlayer(player, offset));
+            }
+            sim::Event::Dash { player } => {
+                if let Some(p) = w.players.get(player) {
+                    burst(&mut commands, &mut juice, Vec2::new(p.x, p.y - t.height * 0.3), 6, 160.0, 14.0, white, -p.facing);
+                }
+            }
+            sim::Event::Hit { x, y, dir } => {
+                juice.shake = juice.shake.max(3.0);
+                burst(&mut commands, &mut juice, Vec2::new(x, y), 8, 420.0, 22.0, white, dir);
+                burst(&mut commands, &mut juice, Vec2::new(x, y), 5, 260.0, 8.0, Color::srgb(0.85, 0.2, 0.18), dir);
+            }
+            sim::Event::Hurt { x, y } => {
+                juice.shake = juice.shake.max(9.0);
+                burst(&mut commands, &mut juice, Vec2::new(x, y), 10, 380.0, 18.0, white, 0.0);
+            }
+            sim::Event::Kill { x, y, kind, flowers, dir } => {
+                juice.shake = juice.shake.max(7.0);
+                let pos = Vec2::new(x, y);
+                let size = game.tuning.enemies.get(&kind).map(|e| e.width).unwrap_or(30.0);
+                // The tomato itself swells and whites out,
+                if let Some(look) = art.enemies.get(&kind) {
+                    let mut ghost = Sprite::from_image(look.image.clone());
+                    ghost.custom_size = Some(look.size);
+                    ghost.color = Color::srgb(4.0, 4.0, 4.0);
+                    spawn_fx(&mut commands, ghost, pos + Vec2::new(0.0, look.lift - size * 0.45), 1.5, 0.0, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.14, max: 0.14, spin: 0.0, grow: 5.0 });
+                }
+                // a white flash and impact lines,
+                spawn_fx(&mut commands, Sprite::from_color(white, Vec2::splat(size * 1.2)), pos, 3.8, 0.785, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.09, max: 0.09, spin: 6.0, grow: 14.0 });
+                burst(&mut commands, &mut juice, pos, 14, 560.0, 30.0, white, dir * 0.5);
+                // chunks of tomato,
+                for i in 0..(10 + size as usize / 4) {
+                    let ang = juice.rand() * std::f32::consts::TAU;
+                    let v = Vec2::from_angle(ang) * (140.0 + juice.rand() * 320.0) + Vec2::new(dir * 180.0, 160.0);
+                    let s = size * (0.1 + juice.rand() * 0.16);
+                    let col = if i % 3 == 0 { Color::srgb(0.96, 0.54, 0.42) } else { Color::srgb(0.85, 0.2, 0.18) };
+                    let life = 0.45 + juice.rand() * 0.35;
+                    spawn_fx(&mut commands, Sprite::from_color(col, Vec2::splat(s)), pos, 3.0, ang, Fx { vel: v, gravity: 1500.0, drag: 1.2, life, max: life, spin: (juice.rand() - 0.5) * 20.0, grow: -0.6 });
+                }
+                // and the flowers.
+                for i in 0..flowers {
+                    let ang = juice.rand() * std::f32::consts::TAU;
+                    let v = Vec2::from_angle(ang) * (120.0 + juice.rand() * 240.0) + Vec2::Y * 140.0;
+                    let pick = (juice.rand() * art.flowers.len() as f32) as usize % art.flowers.len().max(1);
+                    let mut sprite = Sprite::from_image(art.flowers.get(pick).cloned().unwrap_or_default());
+                    sprite.custom_size = Some(Vec2::splat(13.0 + juice.rand() * 5.0));
+                    commands.spawn((sprite, Transform::from_translation(pos.extend(5.0)), Flower { vel: v, age: 0.0, delay: 0.3 + i as f32 * 0.045 }));
+                }
+            }
+        }
+    }
+
+    // Speed lines trail the whole dash.
+    for (i, p) in w.players.iter().enumerate() {
+        if p.dash_t > 0.0 && w.hitstop == 0 {
+            let Some(pos) = at(i) else { continue };
+            for _ in 0..2 {
+                let y = (juice.rand() - 0.5) * t.height * 0.9;
+                let len = 40.0 + juice.rand() * 70.0;
+                let life = 0.12 + juice.rand() * 0.1;
+                spawn_fx(&mut commands, Sprite::from_color(white, Vec2::new(len, 2.0 + juice.rand() * 2.0)), pos + Vec2::new(-p.facing * (len * 0.5 + 6.0), y), 1.8, 0.0, Fx { vel: Vec2::new(-p.facing * 120.0, 0.0), gravity: 0.0, drag: 3.0, life, max: life, spin: 0.0, grow: -1.5 });
+            }
+        }
+    }
+
+    for (e, mut f, mut tf, mut sprite, follow) in &mut fx {
+        f.life -= dt;
+        if f.life <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let drag = (-f.drag * dt).exp();
+        f.vel *= drag;
+        f.vel.y -= f.gravity * dt;
+        match follow.and_then(|o| at(o.0).map(|p| p + o.1)) {
+            Some(p) => tf.translation = p.extend(tf.translation.z),
+            None => tf.translation += (f.vel * dt).extend(0.0),
+        }
+        tf.rotate_z(f.spin * dt);
+        tf.scale *= 1.0 + f.grow * dt;
+        let k = (f.life / f.max).clamp(0.0, 1.0);
+        sprite.color = sprite.color.with_alpha(k.sqrt());
+    }
+
+    // Flowers burst out, hang for a moment, then fly to the score in the corner.
+    juice.pulse = (juice.pulse - dt).max(0.0);
+    if let (Ok(cam), Ok(win)) = (cam.single(), window.single()) {
+        let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
+        let goal = cam.translation.truncate() + Vec2::new(-half.x + 96.0, half.y - 14.0);
+        for (e, mut f, mut tf) in &mut flowers {
+            f.age += dt;
+            let pos = tf.translation.truncate();
+            if f.age < f.delay {
+                f.vel *= (-4.0 * dt).exp();
+                f.vel.y -= 300.0 * dt;
+            } else {
+                let to = goal - pos;
+                if to.length() < 14.0 {
+                    commands.entity(e).despawn();
+                    juice.shown_score += 1;
+                    juice.pulse = 0.15;
+                    continue;
+                }
+                let speed = (300.0 + (f.age - f.delay) * 2600.0).min(1800.0);
+                f.vel = f.vel.lerp(to.normalize() * speed, (12.0 * dt).min(1.0));
+            }
+            tf.translation += (f.vel * dt).extend(0.0);
+            tf.rotate_z(5.0 * dt);
+        }
+    }
+    // Keep the shown score honest after a restart or if a flower was lost.
+    let real = w.players.first().map(|p| p.score).unwrap_or(0);
+    if flowers.is_empty() && juice.shown_score != real {
+        juice.shown_score = real;
     }
 }
