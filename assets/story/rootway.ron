@@ -14,6 +14,7 @@
             lines: [
                 (who: "simon", text: "Baba, there are a lot of tomatoes out there!"),
                 (who: "charm", text: "Ahhh tomatoes, damnit I hate tomatoes!"),
+                (who: "simon", text: "I'll save you!"),
             ],
         ),
         // Example of a place trigger (remove the two slashes on each line to use it):

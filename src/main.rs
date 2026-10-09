@@ -3,7 +3,8 @@ mod sim;
 
 use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::prelude::*;
-use bevy::camera::Hdr;
+use bevy::camera::visibility::RenderLayers;
+use bevy::camera::{ClearColorConfig, Hdr, Viewport};
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use sim::{AttackDir, Rect, Tuning, World as SimWorld};
 use serde::Deserialize;
@@ -31,6 +32,7 @@ struct Game {
 struct HudBit {
     kind: u8,
     i: usize,
+    cam: usize,
 }
 #[derive(Component)]
 struct BubblePart;
@@ -77,6 +79,19 @@ struct Story {
     last_tick: u32,
 }
 
+/// One of the two game cameras. In split screen each follows its own player.
+#[derive(Component)]
+struct ViewCam(usize);
+/// Where each game camera is looking and how much it sees, for things that stick to the screen.
+#[derive(Resource)]
+struct Views {
+    pos: [Vec2; 2],
+    half: [Vec2; 2],
+    split: bool,
+    /// F2 turns split screen off, back to one shared camera.
+    want_split: bool,
+}
+
 #[derive(Component)]
 struct Geo;
 #[derive(Component)]
@@ -89,6 +104,7 @@ struct PartPivot;
 struct BgLayer {
     factor: f32,
     slot: f32,
+    cam: usize,
 }
 /// A cutout figure: a root at the feet with rotating parts under it.
 #[derive(Component)]
@@ -109,6 +125,9 @@ struct Skin(usize);
 struct Chooser(bool);
 #[derive(Component)]
 struct ChooserText;
+/// The line down the middle in split screen.
+#[derive(Component)]
+struct Divider;
 /// F3 shows the collision shapes.
 #[derive(Resource, Default)]
 struct ShowShapes(bool);
@@ -188,6 +207,8 @@ struct Flower {
     vel: Vec2,
     age: f32,
     delay: f32,
+    /// Which screen's bouquet it flies to.
+    cam: usize,
 }
 
 fn asset_dir() -> PathBuf {
@@ -256,6 +277,7 @@ fn main() {
         .init_resource::<ShowShapes>()
         .init_resource::<Juice>()
         .init_resource::<Story>()
+        .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
         .add_systems(Startup, setup)
         .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
         .add_systems(FixedUpdate, tick)
@@ -263,15 +285,23 @@ fn main() {
 }
 
 fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut art: ResMut<Art>) {
-    commands.spawn((
-        Camera2d,
-        Hdr,
-        Bloom { intensity: 0.22, prefilter: BloomPrefilter { threshold: 1.0, threshold_softness: 0.4 }, composite_mode: BloomCompositeMode::Additive, ..Bloom::NATURAL },
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: bevy::camera::ScalingMode::FixedVertical { viewport_height: VIEW_H },
-            ..OrthographicProjection::default_2d()
-        }),
-    ));
+    // Two game cameras (the second only runs in split screen) and one camera that draws the interface over both.
+    for i in 0..2usize {
+        commands.spawn((
+            Camera2d,
+            ViewCam(i),
+            Camera { order: i as isize, is_active: i == 0, ..default() },
+            Hdr,
+            Bloom { intensity: 0.22, prefilter: BloomPrefilter { threshold: 1.0, threshold_softness: 0.4 }, composite_mode: BloomCompositeMode::Additive, ..Bloom::NATURAL },
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: bevy::camera::ScalingMode::FixedVertical { viewport_height: VIEW_H },
+                ..OrthographicProjection::default_2d()
+            }),
+            RenderLayers::from_layers(&[0, i + 1]),
+        ));
+    }
+    // It shares the game cameras' HDR setting so all three draw into the same picture.
+    commands.spawn((Camera2d, Camera { order: 10, clear_color: ClearColorConfig::None, ..default() }, Hdr, RenderLayers::layer(31), IsDefaultUiCamera));
     commands.spawn((
         ImageNode::new(assets.load("sprites/bg/vignette.png")),
         Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
@@ -283,6 +313,12 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         Node { position_type: PositionType::Absolute, top: Val::Px(10.0), left: Val::Px(14.0), ..default() },
     ));
     commands.spawn((
+        Divider,
+        Node { position_type: PositionType::Absolute, left: Val::Percent(50.0), margin: UiRect::left(Val::Px(-2.0)), width: Val::Px(4.0), height: Val::Percent(100.0), ..default() },
+        BackgroundColor(Color::BLACK),
+        Visibility::Hidden,
+    ));
+    commands.spawn((
         ChooserText,
         Text::new(""),
         TextColor(Color::srgb(0.96, 0.89, 0.77)),
@@ -290,11 +326,13 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         Node { position_type: PositionType::Absolute, top: Val::Percent(22.0), width: Val::Percent(100.0), ..default() },
     ));
     for (file, factor, z) in [("sprites/bg/far.png", 0.12, -20.0), ("sprites/bg/mid.png", 0.35, -10.0)] {
-        for i in 0..6 {
-            let mut sprite = Sprite::from_image(assets.load(file));
-            sprite.custom_size = Some(BG_SIZE);
-            sprite.flip_x = i % 2 == 1;
-            commands.spawn((BgLayer { factor, slot: i as f32 - 2.0 }, sprite, Transform::from_xyz(0.0, 0.0, z)));
+        for cam in 0..2usize {
+            for i in 0..6 {
+                let mut sprite = Sprite::from_image(assets.load(file));
+                sprite.custom_size = Some(BG_SIZE);
+                sprite.flip_x = i % 2 == 1;
+                commands.spawn((BgLayer { factor, slot: i as f32 - 2.0, cam }, sprite, Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(cam + 1)));
+            }
         }
     }
 
@@ -317,9 +355,11 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     }
     // The bouquet in the corner: a wrap, ten flower slots and a row of hearts.
     let bit = |commands: &mut Commands, kind: u8, i: usize, image: Handle<Image>, size: Vec2| {
-        let mut s = Sprite::from_image(image);
-        s.custom_size = Some(size);
-        commands.spawn((HudBit { kind, i }, s, Transform::from_xyz(0.0, 0.0, 6.0), Visibility::Hidden));
+        for cam in 0..2usize {
+            let mut s = Sprite::from_image(image.clone());
+            s.custom_size = Some(size);
+            commands.spawn((HudBit { kind, i, cam }, s, Transform::from_xyz(0.0, 0.0, 6.0), Visibility::Hidden, RenderLayers::layer(cam + 1)));
+        }
     };
     bit(&mut commands, 0, 0, assets.load("sprites/ui/wrap.png"), Vec2::new(24.0, 30.0));
     for i in 0..10 {
@@ -784,50 +824,74 @@ fn draw_enemies(
     }
 }
 
-/// Camera eases toward the player, a little ahead of where they face, kept inside the level.
-/// Background layers follow it at a fraction of its speed.
+/// Each camera eases toward what it follows, a little ahead of where they face, kept inside the level.
+/// One player or shared view: one camera on the middle of the players. Split screen: one camera each, side by side.
+/// Background layers follow their camera at a fraction of its speed.
 fn camera(
     game: Res<Game>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
     window: Query<&Window, With<PrimaryWindow>>,
-    mut cam: Query<&mut Transform, With<Camera2d>>,
-    mut layers: Query<(&BgLayer, &mut Transform), Without<Camera2d>>,
+    mut cams: Query<(&ViewCam, &mut Transform, &mut Camera)>,
+    mut layers: Query<(&BgLayer, &mut Transform, &mut Visibility), Without<ViewCam>>,
     mut juice: ResMut<Juice>,
-    mut base: Local<Option<Vec2>>,
+    mut views: ResMut<Views>,
+    mut base: Local<[Option<Vec2>; 2]>,
 ) {
-    let (Ok(mut cam), Some(first), Ok(win)) = (cam.single_mut(), game.world.players.first(), window.single()) else { return };
-    // Follow the middle of the players still standing (on two Decks each player will get their own camera).
-    let up: Vec<&sim::Player> = game.world.players.iter().filter(|p| !p.down).collect();
-    let n = up.len().max(1) as f32;
-    let mut p = first.clone();
-    if !up.is_empty() {
-        p.x = up.iter().map(|q| q.x).sum::<f32>() / n;
-        p.y = up.iter().map(|q| q.y).sum::<f32>() / n;
-        p.px = up.iter().map(|q| q.px).sum::<f32>() / n;
-        p.py = up.iter().map(|q| q.py).sum::<f32>() / n;
-        if up.len() > 1 {
-            p.facing = 0.0;
-        }
-    }
+    let Ok(win) = window.single() else { return };
+    let w = &game.world;
     let a = fixed.overstep_fraction();
-    let b: Rect = game.world.level.bounds;
-    let half_h = VIEW_H / 2.0;
-    let half_w = half_h * win.width() / win.height().max(1.0);
-    let clamp = |v: f32, lo: f32, hi: f32| if lo > hi { (lo + hi) / 2.0 } else { v.clamp(lo, hi) };
-    let target = Vec2::new(
-        clamp(p.px + (p.x - p.px) * a + p.facing * 60.0, b.0 + half_w, b.0 + b.2 - half_w),
-        clamp(p.py + (p.y - p.py) * a + 50.0, b.1 + half_h, b.1 + b.3 - half_h),
-    );
-    let k = 1.0 - (-8.0 * time.delta_secs()).exp();
-    let pos = base.unwrap_or(target).lerp(target, k);
-    *base = Some(pos);
-    // Shake starts hard and dies away fast.
+    let b: Rect = w.level.bounds;
+    let split = w.players.len() == 2 && views.want_split;
+    views.split = split;
+    let (pw, ph) = (win.physical_width().max(2), win.physical_height().max(2));
     juice.shake = (juice.shake - time.delta_secs() * 40.0).max(0.0);
-    let jolt = Vec2::new(juice.rand() - 0.5, juice.rand() - 0.5) * 2.0 * juice.shake;
-    cam.translation = (pos + jolt).extend(cam.translation.z);
+    let at = |p: &sim::Player| Vec2::new(p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a);
+    let up: Vec<&sim::Player> = w.players.iter().filter(|p| !p.down).collect();
+    for (vc, mut tf, mut cam) in &mut cams {
+        let i = vc.0;
+        if i == 1 {
+            cam.is_active = split;
+            if !split {
+                base[1] = None;
+                continue;
+            }
+        }
+        cam.viewport = if split { Some(Viewport { physical_position: UVec2::new(i as u32 * pw / 2, 0), physical_size: UVec2::new(pw / 2, ph), ..default() }) } else { None };
+        let aspect = if split { (pw / 2) as f32 / ph as f32 } else { pw as f32 / ph as f32 };
+        let half = Vec2::new(VIEW_H / 2.0 * aspect, VIEW_H / 2.0);
+        // What this camera follows: its own player in split screen (their partner if they are down), otherwise everyone standing.
+        let (focus, facing) = if split {
+            let p = w.players.get(i).filter(|p| !p.down).or(up.first().copied()).or(w.players.get(i));
+            p.map(|p| (at(p), p.facing)).unwrap_or((Vec2::ZERO, 0.0))
+        } else if up.is_empty() {
+            w.players.first().map(|p| (at(p), 0.0)).unwrap_or((Vec2::ZERO, 0.0))
+        } else {
+            let n = up.len() as f32;
+            (up.iter().map(|p| at(p)).sum::<Vec2>() / n, if up.len() == 1 { up[0].facing } else { 0.0 })
+        };
+        let clamp = |v: f32, lo: f32, hi: f32| if lo > hi { (lo + hi) / 2.0 } else { v.clamp(lo, hi) };
+        let target = Vec2::new(
+            clamp(focus.x + facing * if split { 40.0 } else { 60.0 }, b.0 + half.x, b.0 + b.2 - half.x),
+            clamp(focus.y + 50.0, b.1 + half.y, b.1 + b.3 - half.y),
+        );
+        let k = 1.0 - (-8.0 * time.delta_secs()).exp();
+        let pos = base[i].unwrap_or(target).lerp(target, k);
+        base[i] = Some(pos);
+        // Shake starts hard and dies away fast.
+        let jolt = Vec2::new(juice.rand() - 0.5, juice.rand() - 0.5) * 2.0 * juice.shake;
+        tf.translation = (pos + jolt).extend(tf.translation.z);
+        views.pos[i] = pos;
+        views.half[i] = half;
+    }
     let mid_y = b.1 + b.3 / 2.0;
-    for (layer, mut tf) in &mut layers {
+    for (layer, mut tf, mut vis) in &mut layers {
+        if layer.cam == 1 && !split {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Visible;
+        let pos = views.pos[layer.cam];
         let shift = (pos.x * layer.factor).rem_euclid(BG_SIZE.x * 2.0);
         tf.translation.x = pos.x - shift + layer.slot * BG_SIZE.x;
         tf.translation.y = pos.y + (mid_y - pos.y) * layer.factor * 0.3;
@@ -863,7 +927,7 @@ fn hud(
         let want = if chooser.0 {
             let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
             let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
-            let how = if game.players == 1 { "" } else { "\n\nPlayer 1 picks; player 2 is the other.\nKeyboard is player 1, controller is player 2.\nPass a life: B on the controller, G on the keyboard" };
+            let how = if game.players == 1 { "" } else { "\n\nPlayer 1 picks; player 2 is the other.\nOne controller: keyboard is player 1, controller is player 2.\nTwo controllers: one each. F2 switches split screen on and off.\nPass a life: B on the controller, G on the keyboard" };
             format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\n{n}\n\nLeft / Right: character     Up / Down: players\nA, Space or Enter to start{how}")
         } else if game.world.players.iter().any(|q| q.combo >= 2) {
             format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
@@ -883,6 +947,7 @@ fn hotkeys(
     mut skin: ResMut<Skin>,
     mut chooser: ResMut<Chooser>,
     mut show: ResMut<ShowShapes>,
+    mut views: ResMut<Views>,
     mut held: Local<bool>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
@@ -912,6 +977,9 @@ fn hotkeys(
         if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || pad(GamepadButton::South) || pad(GamepadButton::Start) {
             chooser.0 = false;
         }
+    }
+    if keys.just_pressed(KeyCode::F2) {
+        views.want_split = !views.want_split;
     }
     if keys.just_pressed(KeyCode::F3) {
         show.0 = !show.0;
@@ -975,8 +1043,7 @@ fn juice(
     art: Res<Art>,
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
-    window: Query<&Window, With<PrimaryWindow>>,
-    cam: Query<&Transform, (With<Camera2d>, Without<Fx>, Without<Flower>)>,
+    views: Res<Views>,
     mut juice: ResMut<Juice>,
     mut fx: Query<(Entity, &mut Fx, &mut Transform, &mut Sprite, Option<&OnPlayer>), Without<Flower>>,
     mut flowers: Query<(Entity, &mut Flower, &mut Transform), Without<Fx>>,
@@ -1112,7 +1179,9 @@ fn juice(
                     let pick = (juice.rand() * art.flowers.len() as f32) as usize % art.flowers.len().max(1);
                     let mut sprite = Sprite::from_image(art.flowers.get(pick).cloned().unwrap_or_default());
                     sprite.custom_size = Some(Vec2::splat(13.0 + juice.rand() * 5.0));
-                    commands.spawn((sprite, Transform::from_translation(pos.extend(5.0)), Flower { vel: v, age: 0.0, delay: 0.3 + i as f32 * 0.045 }));
+                    // In split screen the flowers fly to the bouquet on the screen of whoever is nearest.
+                    let cam = if views.split { w.players.iter().enumerate().filter(|(_, p)| !p.down).min_by(|a, b| (a.1.x - x).abs().total_cmp(&(b.1.x - x).abs())).map(|(i, _)| i).unwrap_or(0) } else { 0 };
+                    commands.spawn((sprite, Transform::from_translation(pos.extend(5.0)), Flower { vel: v, age: 0.0, delay: 0.3 + i as f32 * 0.045, cam }));
                 }
             }
         }
@@ -1156,10 +1225,9 @@ fn juice(
 
     // Flowers burst out, hang for a moment, then fly to the score in the corner.
     juice.pulse = (juice.pulse - dt).max(0.0);
-    if let (Ok(cam), Ok(win)) = (cam.single(), window.single()) {
-        let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
-        let goal = cam.translation.truncate() + Vec2::new(-half.x + 50.0, half.y - 56.0);
-        let mut made_heart = false;
+    {
+        let goal_of = |c: usize| { let c = if views.split { c.min(1) } else { 0 }; views.pos[c] + Vec2::new(-views.half[c].x + 50.0, views.half[c].y - 56.0) };
+        let mut made_heart = None;
         for (e, mut f, mut tf) in &mut flowers {
             f.age += dt;
             let pos = tf.translation.truncate();
@@ -1167,12 +1235,15 @@ fn juice(
                 f.vel *= (-4.0 * dt).exp();
                 f.vel.y -= 300.0 * dt;
             } else {
+                let goal = goal_of(f.cam);
                 let to = goal - pos;
                 if to.length() < 14.0 {
                     commands.entity(e).despawn();
                     juice.shown_score += 1;
                     juice.pulse = 0.15;
-                    made_heart |= juice.shown_score % 10 == 0;
+                    if juice.shown_score % 10 == 0 {
+                        made_heart = Some(goal);
+                    }
                     continue;
                 }
                 let speed = (300.0 + (f.age - f.delay) * 2600.0).min(1800.0);
@@ -1181,7 +1252,7 @@ fn juice(
             tf.translation += (f.vel * dt).extend(0.0);
             tf.rotate_z(5.0 * dt);
         }
-        if made_heart {
+        if let Some(goal) = made_heart {
             // Ten flowers: the bouquet bursts into a heart.
             let pink = Color::srgb(3.0, 1.2, 1.8);
             light(&mut commands, goal, 260.0, 0.4, 0.35);
@@ -1197,19 +1268,18 @@ fn juice(
 }
 
 /// The bouquet in the top-left corner: one flower per flower collected, bursting into a heart at ten.
-fn bouquet(
-    game: Res<Game>,
-    juice: Res<Juice>,
-    window: Query<&Window, With<PrimaryWindow>>,
-    cam: Query<&Transform, (With<Camera2d>, Without<HudBit>)>,
-    mut bits: Query<(&HudBit, &mut Transform, &mut Visibility)>,
-) {
-    let (Ok(cam), Ok(win)) = (cam.single(), window.single()) else { return };
-    let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
-    let base = cam.translation.truncate() + Vec2::new(-half.x + 50.0, half.y - 88.0);
+fn bouquet(game: Res<Game>, juice: Res<Juice>, views: Res<Views>, mut bits: Query<(&HudBit, &mut Transform, &mut Visibility), Without<Divider>>, mut divider: Query<&mut Visibility, With<Divider>>) {
+    if let Ok(mut v) = divider.single_mut() {
+        *v = if views.split { Visibility::Visible } else { Visibility::Hidden };
+    }
     let held = (juice.shown_score % 10) as usize;
     let hearts = game.world.hearts as usize;
     for (bit, mut tf, mut vis) in &mut bits {
+        if bit.cam == 1 && !views.split {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        let base = views.pos[bit.cam] + Vec2::new(-views.half[bit.cam].x + 50.0, views.half[bit.cam].y - 88.0);
         let (show, pos, pop) = match bit.kind {
             0 => (true, base, false),
             1 => {
@@ -1253,8 +1323,7 @@ fn story(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
     ui: Res<StoryUi>,
-    window: Query<&Window, With<PrimaryWindow>>,
-    cam: Query<&Transform, (With<Camera2d>, Without<BubblePart>)>,
+    views: Res<Views>,
     mut story: ResMut<Story>,
     mut parts: Query<(&mut Transform, Option<&mut Sprite>, Option<&mut Text2d>, Option<&mut Visibility>), With<BubblePart>>,
 ) {
@@ -1315,7 +1384,6 @@ fn story(
     if done {
         story.current = None;
     }
-    let (Ok(cam), Ok(win)) = (cam.single(), window.single()) else { return };
     let Some((line, age)) = show.filter(|_| !done) else {
         if let Ok((_, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
             *vis = Visibility::Hidden;
@@ -1347,16 +1415,19 @@ fn story(
             s
         })
         .collect();
-    let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
-    let centre = cam.translation.truncate();
+    let half = views.half[0];
+    let centre = views.pos[0];
     let head = game.tuning.player.height / 2.0 + 24.0;
     let mut pos = match speaker {
         Some(p) => p + Vec2::new(0.0, head + 8.0 + size.y / 2.0),
         None => centre + Vec2::new(0.0, half.y - 70.0 - size.y / 2.0),
     };
     let anchor_x = speaker.map(|p| p.x).unwrap_or(pos.x);
-    pos.x = pos.x.clamp(centre.x - half.x + size.x / 2.0 + 6.0, centre.x + half.x - size.x / 2.0 - 6.0);
-    pos.y = pos.y.min(centre.y + half.y - size.y / 2.0 - 6.0);
+    // With one view the bubble is kept on screen. In split screen it simply stays over the speaker.
+    if !views.split || speaker.is_none() {
+        pos.x = pos.x.clamp(centre.x - half.x + size.x / 2.0 + 6.0, centre.x + half.x - size.x / 2.0 - 6.0);
+        pos.y = pos.y.min(centre.y + half.y - size.y / 2.0 - 6.0);
+    }
     let pop = (age * 9.0).min(1.0);
     if let Ok((mut tf, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
         tf.translation = pos.extend(7.0);
