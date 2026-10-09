@@ -1,7 +1,9 @@
 //! Charm Adventure in Tomato Land - movement slice.
 mod sim;
 
+use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::prelude::*;
+use bevy::camera::Hdr;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use sim::{AttackDir, Rect, Tuning, World as SimWorld};
 use serde::Deserialize;
@@ -88,6 +90,7 @@ struct EnemyArt {
 struct Art {
     enemies: HashMap<String, EnemyArt>,
     slash: Handle<Image>,
+    light: Handle<Image>,
     flowers: Vec<Handle<Image>>,
 }
 
@@ -203,6 +206,8 @@ fn main() {
 fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut art: ResMut<Art>) {
     commands.spawn((
         Camera2d,
+        Hdr,
+        Bloom { intensity: 0.22, prefilter: BloomPrefilter { threshold: 1.0, threshold_softness: 0.4 }, composite_mode: BloomCompositeMode::Additive, ..Bloom::NATURAL },
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: bevy::camera::ScalingMode::FixedVertical { viewport_height: VIEW_H },
             ..OrthographicProjection::default_2d()
@@ -243,6 +248,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         }
     };
     art.slash = assets.load("sprites/fx/slash.png");
+    art.light = assets.load("sprites/fx/light.png");
     art.flowers = (0..6).map(|i| assets.load(format!("sprites/fx/flower{i}.png"))).collect();
     for (kind, e) in &rigs.enemies {
         let size = Vec2::new(e.size.0, e.size.1) * e.units_per_px;
@@ -560,7 +566,7 @@ fn draw_enemies(
                 }
                 sprite.color = if e.flash > 0.0 { Color::srgb(1.0, 0.75, 0.75) } else { Color::WHITE };
                 sprite.custom_size = Some(look.size);
-                sprite.flip_x = e.dir > 0.0;
+                sprite.flip_x = e.dir < 0.0;
                 let wobble = if e.on_ground && e.vx.abs() > 1.0 { (time.elapsed_secs() * 12.0 + vis.0 as f32).sin() * 0.1 } else { 0.0 };
                 let feet = y - et.height / 2.0;
                 tf.translation = Vec3::new(x, feet + look.lift * punch, 1.0);
@@ -642,6 +648,8 @@ fn hud(
         let want = if chooser.0 {
             let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
             format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nLeft / Right to choose\nA, Space or Enter to start")
+        } else if p.combo >= 2 {
+            format!("x{} COMBO", p.combo)
         } else {
             String::new()
         };
@@ -755,7 +763,14 @@ fn juice(
     let a = fixed.overstep_fraction();
     let t = &game.tuning.player;
     let w = &game.world;
-    let white = Color::srgb(1.0, 0.97, 0.9);
+    // Brighter than white: with the HDR camera these bloom, so effects read as giving off light.
+    let white = Color::srgb(2.6, 2.4, 2.0);
+    let light = |commands: &mut Commands, pos: Vec2, size: f32, strength: f32, life: f32| {
+        let mut s = Sprite::from_image(art.light.clone());
+        s.custom_size = Some(Vec2::splat(size));
+        s.color = Color::srgba(1.0, 0.93, 0.78, strength);
+        commands.spawn((s, Transform::from_translation(pos.extend(0.6)), Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life, max: life, spin: 0.0, grow: 1.5 }));
+    };
     let at = |i: usize| w.players.get(i).map(|p| Vec2::new(p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a));
     let spawn_fx = |commands: &mut Commands, sprite: Sprite, pos: Vec2, z: f32, rot: f32, fx: Fx| {
         commands.spawn((sprite, Transform::from_translation(pos.extend(z)).with_rotation(Quat::from_rotation_z(rot)), fx)).id()
@@ -775,14 +790,12 @@ fn juice(
         match ev {
             sim::Event::Swing { player } => {
                 let Some(p) = w.players.get(player) else { continue };
-                let (from, to) = match p.attack_dir {
-                    AttackDir::Side => t.swing_side,
-                    AttackDir::Up => t.swing_up,
-                    AttackDir::Down => t.swing_down,
-                };
+                let (from, to) = p.arc(t);
                 let lift = if p.attack_dir == AttackDir::Down { -t.shoulder_height * 0.5 } else { t.shoulder_height };
                 let mid = ((from + to) / 2.0).to_radians();
                 let mut sprite = Sprite::from_image(art.slash.clone());
+                sprite.color = Color::srgb(1.9, 1.8, 1.6);
+                light(&mut commands, Vec2::new(p.x + p.facing * 30.0, p.y + lift), 240.0, 0.12, 0.14);
                 sprite.custom_size = Some(Vec2::splat((t.weapon_length + 10.0) / 117.0 * 256.0));
                 // The crescent art thickens toward its leading end; flip it so that end leads the swing.
                 sprite.flip_y = (to < from) != (p.facing < 0.0);
@@ -798,6 +811,7 @@ fn juice(
             }
             sim::Event::Hit { x, y, dir } => {
                 juice.shake = juice.shake.max(3.0);
+                light(&mut commands, Vec2::new(x, y), 200.0, 0.2, 0.12);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 8, 420.0, 22.0, white, dir);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 5, 260.0, 8.0, Color::srgb(0.85, 0.2, 0.18), dir);
             }
@@ -805,9 +819,10 @@ fn juice(
                 juice.shake = juice.shake.max(9.0);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 10, 380.0, 18.0, white, 0.0);
             }
-            sim::Event::Kill { x, y, kind, flowers, dir } => {
-                juice.shake = juice.shake.max(7.0);
+            sim::Event::Kill { x, y, kind, flowers, dir, combo } => {
+                juice.shake = juice.shake.max(6.0 + combo.min(6) as f32);
                 let pos = Vec2::new(x, y);
+                light(&mut commands, pos, 380.0, 0.28, 0.2);
                 let size = game.tuning.enemies.get(&kind).map(|e| e.width).unwrap_or(30.0);
                 // The tomato itself swells and whites out,
                 if let Some(look) = art.enemies.get(&kind) {
@@ -845,6 +860,7 @@ fn juice(
     for (i, p) in w.players.iter().enumerate() {
         if p.dash_t > 0.0 && w.hitstop == 0 {
             let Some(pos) = at(i) else { continue };
+            light(&mut commands, pos - Vec2::X * p.facing * 30.0, 240.0, 0.10, 0.12);
             for _ in 0..2 {
                 let y = (juice.rand() - 0.5) * t.height * 0.9;
                 let len = 40.0 + juice.rand() * 70.0;
@@ -869,8 +885,11 @@ fn juice(
         }
         tf.rotate_z(f.spin * dt);
         tf.scale *= 1.0 + f.grow * dt;
+        // Fade by the fraction of life lost this frame, so each sprite keeps its own starting strength.
+        let before = ((f.life + dt) / f.max).clamp(0.001, 1.0);
         let k = (f.life / f.max).clamp(0.0, 1.0);
-        sprite.color = sprite.color.with_alpha(k.sqrt());
+        let alpha = sprite.color.alpha() * (k / before).sqrt();
+        sprite.color = sprite.color.with_alpha(alpha);
     }
 
     // Flowers burst out, hang for a moment, then fly to the score in the corner.

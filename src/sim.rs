@@ -45,6 +45,10 @@ pub struct PlayerTuning {
     /// A press this long before the attack is ready still fires it on the first possible tick.
     pub attack_buffer: f32,
     /// Ticks the whole world freezes on a hit, a kill, and when the player is hurt.
+    /// Kills this close together chain into a combo.
+    pub combo_window: f32,
+    /// After a kill the next attack is ready this soon.
+    pub kill_refund: f32,
     pub hitstop_hit: u32,
     pub hitstop_kill: u32,
     pub hitstop_hurt: u32,
@@ -173,6 +177,11 @@ pub struct Player {
     pub swing_fresh: bool,
     /// Flowers collected.
     pub score: u32,
+    /// Kills chained so far, and the time left to add another.
+    pub combo: u32,
+    pub combo_t: f32,
+    /// Side swings alternate direction: down-stroke, then up-stroke.
+    pub swing_alt: bool,
     pub safe_x: f32,
     pub safe_y: f32,
     pub prev: Input,
@@ -201,7 +210,7 @@ pub enum Event {
     Swing { player: usize },
     Dash { player: usize },
     Hit { x: f32, y: f32, dir: f32 },
-    Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32 },
+    Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32, combo: u32 },
     Hurt { x: f32, y: f32 },
 }
 
@@ -295,7 +304,7 @@ impl Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
             air_dash_ready: true, dash_t: 0.0, dash_cd: 0.0, sprinting: false, wall_lock: 0.0,
-            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, safe_x: x, safe_y: y,
+            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, combo: 0, combo_t: 0.0, swing_alt: false, safe_x: x, safe_y: y,
             prev: Input::default(),
         }
     }
@@ -304,15 +313,21 @@ impl Player {
         Rect::centered(self.x, self.y, t.width, t.height)
     }
 
+    /// The current swing's arc in degrees (start, end), facing right.
+    pub fn arc(&self, t: &PlayerTuning) -> (f32, f32) {
+        match self.attack_dir {
+            AttackDir::Side if self.swing_alt => (t.swing_side.1, t.swing_side.0),
+            AttackDir::Side => t.swing_side,
+            AttackDir::Up => t.swing_up,
+            AttackDir::Down => t.swing_down,
+        }
+    }
+
     /// Swing angle in degrees, facing right, at a given time left on the swing.
     fn swing_angle(&self, t: &PlayerTuning, time_left: f32) -> f32 {
         let u = (1.0 - time_left / t.attack_time.max(0.001)).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - u).powi(3);
-        let (from, to) = match self.attack_dir {
-            AttackDir::Side => t.swing_side,
-            AttackDir::Up => t.swing_up,
-            AttackDir::Down => t.swing_down,
-        };
+        let (from, to) = self.arc(t);
         from + (to - from) * eased
     }
 
@@ -336,11 +351,7 @@ impl Player {
     /// The weapon line at steps across the whole arc. The hit lands on the first tick of the swing,
     /// everywhere the arc will pass; the drawn swing then catches up within a few frames.
     fn weapon_arc(&self, t: &PlayerTuning) -> [((f32, f32), (f32, f32)); 9] {
-        let (from, to) = match self.attack_dir {
-            AttackDir::Side => t.swing_side,
-            AttackDir::Up => t.swing_up,
-            AttackDir::Down => t.swing_down,
-        };
+        let (from, to) = self.arc(t);
         std::array::from_fn(|i| self.weapon_at(t, from + (to - from) * i as f32 / 8.0))
     }
 
@@ -412,8 +423,11 @@ impl World {
             let attack_pressed = pressed(inp.attack, p.prev.attack);
             p.px = p.x;
             p.py = p.y;
-            for timer in [&mut p.coyote, &mut p.jump_buf, &mut p.dash_cd, &mut p.wall_lock, &mut p.attack_cd, &mut p.attack_t, &mut p.invuln, &mut p.hitstun, &mut p.attack_buf] {
+            for timer in [&mut p.coyote, &mut p.jump_buf, &mut p.dash_cd, &mut p.wall_lock, &mut p.attack_cd, &mut p.attack_t, &mut p.invuln, &mut p.hitstun, &mut p.attack_buf, &mut p.combo_t] {
                 *timer = (*timer - DT).max(0.0);
+            }
+            if p.combo_t <= 0.0 {
+                p.combo = 0;
             }
             let control = p.hitstun <= 0.0;
             let sliding = p.wall_sliding(&inp);
@@ -512,6 +526,9 @@ impl World {
                 } else {
                     AttackDir::Side
                 };
+                if p.attack_dir == AttackDir::Side {
+                    p.swing_alt = !p.swing_alt;
+                }
                 p.attack_t = t.attack_time;
                 p.attack_cd = t.attack_cooldown;
             }
@@ -613,6 +630,7 @@ impl World {
                 let sweep = p.weapon_arc(t);
                 let _ = i;
                 let mut connected = false;
+                let mut killed = false;
                 for e in self.enemies.iter_mut() {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
                     let body = e.body(et);
@@ -622,9 +640,14 @@ impl World {
                     e.hp -= t.attack_damage;
                     let dir = if p.attack_dir == AttackDir::Side { p.facing } else { 0.0 };
                     if e.hp <= 0 {
-                        p.score += et.flowers;
+                        killed = true;
+                        p.combo += 1;
+                        p.combo_t = t.combo_window;
+                        // Each link in the chain is worth one more flower, up to five extra.
+                        let flowers = et.flowers + (p.combo - 1).min(5);
+                        p.score += flowers;
                         self.hitstop = self.hitstop.max(t.hitstop_kill);
-                        self.events.push(Event::Kill { x: body.x, y: body.y, kind: e.kind.clone(), flowers: et.flowers, dir });
+                        self.events.push(Event::Kill { x: body.x, y: body.y, kind: e.kind.clone(), flowers, dir, combo: p.combo });
                     } else {
                         self.hitstop = self.hitstop.max(t.hitstop_hit);
                         self.events.push(Event::Hit { x: body.x, y: body.y, dir });
@@ -638,8 +661,14 @@ impl World {
                     }
                     connected = true;
                 }
+                if killed {
+                    // A kill keeps the flow going: no recoil, next attack almost at once, air dash back.
+                    p.attack_cd = p.attack_cd.min(t.kill_refund);
+                    p.air_dash_ready = true;
+                }
                 if connected {
                     match p.attack_dir {
+                        AttackDir::Side if killed => {}
                         AttackDir::Side => p.vx = -p.facing * t.attack_recoil,
                         AttackDir::Up => {}
                         AttackDir::Down => {

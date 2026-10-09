@@ -1,4 +1,4 @@
-// Written by design/export.py. Pivots are PNG pixels. weapon_axis is the direction the weapon points in the artwork, in degrees, facing right.
+// Written by design/export.py. Pivots are PNG pixels. Angles are degrees, for a figure facing right.
 (
     canvas: (240, 280),
     origin: (120, 265),
@@ -27,9 +27,9 @@
         ),
     },
     enemies: {
-        "cherry": (file: "sprites/tomatoes/cherry.png", size: (240, 240), origin: (120, 228), units_per_px: 1.2500),
-        "beefsteak": (file: "sprites/tomatoes/beefsteak.png", size: (240, 240), origin: (120, 228), units_per_px: 0.7450),
-        "hopper": (file: "sprites/tomatoes/hopper.png", size: (240, 240), origin: (120, 228), units_per_px: 1.1340),
+        "cherry": (file: "sprites/tomatoes/cherry.png", size: (240, 240), origin: (120, 228), units_per_px: 0.5000),
+        "beefsteak": (file: "sprites/tomatoes/beefsteak.png", size: (240, 240), origin: (120, 228), units_per_px: 0.7500),
+        "hopper": (file: "sprites/tomatoes/hopper.png", size: (240, 240), origin: (120, 228), units_per_px: 0.5960),
         "plum": (file: "sprites/tomatoes/plum.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
         "greenie": (file: "sprites/tomatoes/greenie.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
         "vine_flyer": (file: "sprites/tomatoes/vine_flyer.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),

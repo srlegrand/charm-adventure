@@ -65,11 +65,32 @@ ron.append('    },\n    enemies: {')
 # game-unit width of the hitbox the body should fill, per kind that exists in tuning.ron
 for (n, _, body), (bodyw, hit) in zip(G.TOMS, [(48, 30), (145, 54), (60, 34), (45, 0), (60, 0), (52, 0), (75, 0), (176, 0)]):
     f = n.lower().replace(' ', '_').replace('-', '_')
-    render(part(body, 240, 240, 120, 228), f'{OUT}/tomatoes/{f}.png', 240, 240)
+    if f not in ('cherry', 'beefsteak', 'hopper'): render(part(body, 240, 240, 120, 228), f'{OUT}/tomatoes/{f}.png', 240, 240)
     upp = (hit * 1.25 / bodyw / K) if hit else 0.75 / K
     ron.append(f'        "{f}": (file: "sprites/tomatoes/{f}.png", size: (240, 240), origin: (120, 228), units_per_px: {upp:.4f}),')
 ron.append('    },\n)')
 open(f'{OUT}/rigs.ron', 'w').write('\n'.join(ron) + '\n')
+
+# three-quarter tomatoes facing right, black outline finish (the game mirrors them for left)
+import shot as T
+def tq(name, sx, sy, body):
+    render(part(f'<g transform="scale({-sx},{sy})">{body}</g>', 240, 240, 120, 228 - 42.5 * sy), f'{OUT}/tomatoes/{name}.png', 240, 240)
+r = 60; Kc = T.K; St = T.S
+mohawk = f'<path d="M{-.5*r},{-.9*r} L{-.74*r},{-1.5*r} L{-.3*r},{-1.12*r} L{-.2*r},{-1.74*r} L{.06*r},{-1.16*r} L{.34*r},{-1.6*r} L{.36*r},{-.95*r}Z" fill="#4c8a3c" {St()}/>'
+fang = f'<path d="M{-.7*r},{.42*r} l{.07*r},{.26*r} l{.08*r},{-.24*r}Z M{-.1*r},{.3*r} l{.07*r},{.26*r} l{.08*r},{-.24*r}Z" fill="#fff6e0" {St(4)}/>'
+tq('cherry', 1.0, 1.0, T.tomato(r, True, '#e8402f', '#a3202a', (28, -30)) + mohawk + fang)
+arms = (f'<path d="M{.8*r},{.25*r} L{1.2*r},{.5*r}" stroke="{Kc}" stroke-width="26" stroke-linecap="round"/><circle cx="{1.24*r}" cy="{.54*r}" r="{.2*r}" fill="#8a1a22" {St()}/>')
+arm_front = (f'<path d="M{-.78*r},{.34*r} L{-1.16*r},{.66*r}" stroke="{Kc}" stroke-width="26" stroke-linecap="round"/><circle cx="{-1.2*r}" cy="{.7*r}" r="{.22*r}" fill="#b8242a" {St()}/>')
+grooves = f'<path d="M{.34*r},{-.94*r} Q{.6*r},0 {.34*r},{.94*r} M{-.34*r},{-.94*r} Q{-.5*r},{-.4*r} {-.46*r},{-.5*r}" stroke="{Kc}" stroke-width="5" fill="none" opacity=".55"/>'
+tusk = f'<path d="M{-.68*r},{.66*r} L{-.62*r},{.2*r} L{-.5*r},{.62*r}Z M{-.04*r},{.56*r} L{.04*r},{.1*r} L{.14*r},{.5*r}Z" fill="#fff6e0" {St(5)}/>'
+scar = f'<path d="M{.3*r},{-.7*r} L{.56*r},{-.3*r} M{.34*r},{-.44*r} l{.14*r},{-.1*r} M{.42*r},{-.58*r} l{.14*r},{-.1*r}" stroke="{Kc}" stroke-width="5" fill="none"/>'
+tq('beefsteak', 1.2, .95, arms + T.tomato(r, True, '#b8242a', '#7a1424', (16, -20)) + grooves + tusk + scar + arm_front)
+gog = ''
+for gx, gy, gr in ((-.62 * r, -.24 * r, .27 * r), (.1 * r, -.2 * r, .31 * r)):
+    gog += f'<circle cx="{gx}" cy="{gy}" r="{gr}" fill="#fff6e0" stroke="{Kc}" stroke-width="9"/><circle cx="{gx-gr*.3}" cy="{gy+gr*.1}" r="{gr*.36}" fill="{Kc}"/>'
+gog += f'<path d="M{-.36*r},{-.26*r} L{-.2*r},{-.24*r} M{.42*r},{-.2*r} Q{.8*r},{-.3*r} {.98*r},{-.1*r}" stroke="{Kc}" stroke-width="9" fill="none"/>'
+spring = f'<path d="M{-.4*r},{.8*r} l{-.3*r},{.12*r} l{.4*r},{.1*r} l{-.4*r},{.1*r} l{.3*r},{.1*r} M{.3*r},{.8*r} l{-.3*r},{.12*r} l{.4*r},{.1*r} l{-.4*r},{.1*r} l{.3*r},{.1*r}" stroke="{Kc}" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+tq('hopper', .95, 1.0, spring + T.tomato(r, False, '#f28a1e', '#b84a14', ()) + gog)
 
 # backgrounds, 1600x1000, mirrored when tiled
 R = random.Random(11)
@@ -92,4 +113,5 @@ mid = [defs, '<path d="M0,1000 L0,520 L70,470 L110,560 Q270,360 430,560 L460,460
        '<rect x="-100" y="600" width="1800" height="260" fill="#4f8fa8" opacity=".14" filter="url(#soft)"/>']
 render(f'<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000">{"".join(mid)}</svg>', f'{OUT}/bg/mid.png', 1600, 1000)
 render(f'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">{defs}<rect width="640" height="400" fill="url(#vg)"/></svg>', f'{OUT}/bg/vignette.png', 640, 400)
+render(f'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><defs><radialGradient id="l"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".4" stop-color="#fff" stop-opacity=".3"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="128" height="128" fill="url(#l)"/></svg>', f'{OUT}/fx/light.png', 128, 128)
 print('ok')
