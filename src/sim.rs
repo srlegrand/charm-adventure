@@ -42,8 +42,16 @@ pub struct PlayerTuning {
     pub wall_jump_lock: f32,
     pub attack_time: f32,
     pub attack_cooldown: f32,
-    pub attack_reach: f32,
-    pub attack_thickness: f32,
+    /// The weapon is a line from the shoulder, swept through an arc. Hits follow it exactly.
+    pub weapon_length: f32,
+    /// Half-thickness of the weapon line.
+    pub weapon_thickness: f32,
+    /// Height of the swing pivot above the body centre.
+    pub shoulder_height: f32,
+    /// Swing arcs in degrees (start, end), facing right: 0 is forward, 90 is up.
+    pub swing_side: (f32, f32),
+    pub swing_up: (f32, f32),
+    pub swing_down: (f32, f32),
     pub attack_damage: i32,
     pub attack_recoil: f32,
     pub pogo_speed: f32,
@@ -69,6 +77,9 @@ pub struct EnemyTuning {
     pub speed: f32,
     pub contact_damage: i32,
     pub knockback: f32,
+    /// Leg length under the round body. The body above the legs is what can be hit.
+    #[serde(default)]
+    pub leg: f32,
     pub behaviour: Behaviour,
     /// Placeholder colour (r, g, b) until sprites exist.
     pub color: (f32, f32, f32),
@@ -180,6 +191,40 @@ pub struct World {
     pub tick: u32,
 }
 
+/// Distance from point (px, py) to the segment a-b.
+fn seg_dist(a: (f32, f32), b: (f32, f32), px: f32, py: f32) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((px - a.0) * dx + (py - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    ((a.0 + dx * t - px).powi(2) + (a.1 + dy * t - py).powi(2)).sqrt()
+}
+
+/// An ellipse: centre and radii.
+#[derive(Clone, Copy, Debug)]
+pub struct Oval {
+    pub x: f32,
+    pub y: f32,
+    pub rx: f32,
+    pub ry: f32,
+}
+
+impl Oval {
+    /// True if a line of the given half-thickness touches the ellipse.
+    pub fn touches_line(&self, a: (f32, f32), b: (f32, f32), thickness: f32) -> bool {
+        // Squash space vertically so the ellipse becomes a circle of radius rx.
+        let k = self.rx / self.ry.max(0.001);
+        let f = |p: (f32, f32)| (p.0, self.y + (p.1 - self.y) * k);
+        seg_dist(f(a), f(b), self.x, self.y) <= self.rx + thickness
+    }
+}
+
+impl Enemy {
+    /// The round body that hits and gets hit: the box minus the legs.
+    pub fn body(&self, et: &EnemyTuning) -> Oval {
+        Oval { x: self.x, y: self.y + et.leg / 2.0, rx: et.width / 2.0, ry: ((et.height - et.leg) / 2.0).max(1.0) }
+    }
+}
+
 fn approach(v: f32, target: f32, step: f32) -> f32 {
     if v < target {
         (v + step).min(target)
@@ -234,17 +279,50 @@ impl Player {
         Rect::centered(self.x, self.y, t.width, t.height)
     }
 
-    /// Hitbox of the current swing, if one is active.
-    pub fn attack_box(&self, t: &PlayerTuning) -> Option<Rect> {
+    /// Swing angle in degrees, facing right, at a given time left on the swing.
+    fn swing_angle(&self, t: &PlayerTuning, time_left: f32) -> f32 {
+        let u = (1.0 - time_left / t.attack_time.max(0.001)).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - u).powi(3);
+        let (from, to) = match self.attack_dir {
+            AttackDir::Side => t.swing_side,
+            AttackDir::Up => t.swing_up,
+            AttackDir::Down => t.swing_down,
+        };
+        from + (to - from) * eased
+    }
+
+    fn weapon_at(&self, t: &PlayerTuning, angle: f32) -> ((f32, f32), (f32, f32)) {
+        let lift = if self.attack_dir == AttackDir::Down { -t.shoulder_height * 0.5 } else { t.shoulder_height };
+        let a = angle.to_radians();
+        let pivot = (self.x, self.y + lift);
+        (pivot, (pivot.0 + a.cos() * t.weapon_length * self.facing, pivot.1 + a.sin() * t.weapon_length))
+    }
+
+    /// The weapon line right now (pivot, tip) and its swing angle, if a swing is active.
+    pub fn weapon(&self, t: &PlayerTuning) -> Option<((f32, f32), (f32, f32), f32)> {
         if self.attack_t <= 0.0 {
             return None;
         }
-        let (r, th) = (t.attack_reach, t.attack_thickness);
-        Some(match self.attack_dir {
-            AttackDir::Side => Rect::centered(self.x + self.facing * (t.width / 2.0 + r / 2.0), self.y, r, th),
-            AttackDir::Up => Rect::centered(self.x, self.y + t.height / 2.0 + r / 2.0, th, r),
-            AttackDir::Down => Rect::centered(self.x, self.y - t.height / 2.0 - r / 2.0, th, r),
-        })
+        let angle = self.swing_angle(t, self.attack_t);
+        let (p, q) = self.weapon_at(t, angle);
+        Some((p, q, angle))
+    }
+
+    /// The weapon line at three moments across the last tick, so a fast swing cannot skip a target.
+    fn weapon_sweep(&self, t: &PlayerTuning) -> Option<[((f32, f32), (f32, f32)); 3]> {
+        if self.attack_t <= 0.0 {
+            return None;
+        }
+        let now = self.swing_angle(t, self.attack_t);
+        let before = self.swing_angle(t, self.attack_t + DT);
+        Some([self.weapon_at(t, before), self.weapon_at(t, (before + now) / 2.0), self.weapon_at(t, now)])
+    }
+
+    /// The body as an upright capsule: a centre line and a radius.
+    pub fn capsule(&self, t: &PlayerTuning) -> ((f32, f32), (f32, f32), f32) {
+        let r = t.width / 2.0;
+        let half = (t.height / 2.0 - r).max(0.0);
+        ((self.x, self.y - half), (self.x, self.y + half), r)
     }
 
     pub fn wall_sliding(&self, input: &Input) -> bool {
@@ -474,14 +552,15 @@ impl World {
 
         // Player swings against enemies, then enemy contact against players.
         for (i, p) in self.players.iter_mut().enumerate() {
-            if let Some(hb) = p.attack_box(t) {
+            if let Some(sweep) = p.weapon_sweep(t) {
                 // One id per swing per player: the tick the swing started on.
                 let started = self.tick - ((t.attack_time - p.attack_t) / DT).round() as u32;
                 let swing = started * 4 + i as u32 + 1;
                 let mut connected = false;
                 for e in self.enemies.iter_mut() {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
-                    if e.last_hit == swing || !hb.overlaps(&Rect::centered(e.x, e.y, et.width, et.height)) {
+                    let body = e.body(et);
+                    if e.last_hit == swing || !sweep.iter().any(|(a, b)| body.touches_line(*a, *b, t.weapon_thickness)) {
                         continue;
                     }
                     e.last_hit = swing;
@@ -509,10 +588,10 @@ impl World {
                 }
             }
             if p.invuln <= 0.0 {
-                let body = p.body(t);
+                let (a, b, r) = p.capsule(t);
                 for e in &self.enemies {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
-                    if e.hp > 0 && body.overlaps(&Rect::centered(e.x, e.y, et.width, et.height)) {
+                    if e.hp > 0 && e.body(et).touches_line(a, b, r) {
                         p.hp -= et.contact_damage;
                         p.invuln = t.invuln_time;
                         p.hitstun = t.hitstun_time;
@@ -632,13 +711,18 @@ mod tests {
         let (mut w, t) = setup();
         let et = &t.enemies["cherry"];
         w.enemies.push(Enemy {
-            kind: "cherry".into(), x: w.players[0].x, y: 40.0 + et.height / 2.0, px: 0.0, py: 0.0, vx: 0.0, vy: 0.0,
+            kind: "cherry".into(), x: w.players[0].x + 20.0, y: 40.0 + et.height / 2.0, px: 0.0, py: 0.0, vx: 0.0, vy: 0.0,
             dir: 1.0, hp: 1, on_ground: true, timer: 0.0, stun: 9.0, flash: 0.0, last_hit: 0,
         });
-        w.players[0].y += 90.0;
+        w.players[0].y += 60.0;
         w.players[0].on_ground = false;
         w.players[0].vy = -100.0;
-        w.step(&[Input { y: -1.0, attack: true, ..Default::default() }], &t);
+        for _ in 0..8 {
+            w.step(&[Input { y: -1.0, attack: true, ..Default::default() }], &t);
+            if w.enemies.is_empty() {
+                break;
+            }
+        }
         assert!(w.enemies.is_empty());
         assert!(w.players[0].vy > 0.0);
     }

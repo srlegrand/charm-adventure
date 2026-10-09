@@ -54,14 +54,13 @@ charm = {
 W, H, OX, OY = 240, 280, 120, 265
 UPP = (84 / 506) / K   # game units per PNG pixel: figures stand 84 units tall
 ron = [f'// Written by design/export.py. Pivots are PNG pixels. Angles are degrees, for a figure facing right.\n(\n    canvas: ({W}, {H}),\n    origin: ({OX}, {OY}),\n    units_per_px: {UPP:.4f},\n    characters: {{']
-swings = {'simon': ((-150, -250), (-120, -210), (60, -20)), 'charm': ((120, 40), (180, 110), (-50, 20))}
+axes = {'simon': -113.9, 'charm': -65.6}
 for name, parts in (('simon', simon), ('charm', charm)):
     ron.append(f'        "{name}": (\n            parts: {{')
     for role, (body, piv) in parts.items():
         render(part(body, W, H, OX, OY), f'{OUT}/{name}/{role}.png', W, H)
         ron.append(f'                "{role}": ({piv[0]*K+OX}, {piv[1]*K+OY}),')
-    a, b, c = swings[name]
-    ron.append(f'            }},\n            swing_side: {a},\n            swing_up: {b},\n            swing_down: {c},\n        ),')
+    ron.append(f'            }},\n            weapon_axis: {axes[name]},\n        ),')
 ron.append('    },\n    enemies: {')
 # game-unit width of the hitbox the body should fill, per kind that exists in tuning.ron
 for (n, _, body), (bodyw, hit) in zip(G.TOMS, [(48, 30), (145, 54), (60, 34), (45, 0), (60, 0), (52, 0), (75, 0), (176, 0)]):

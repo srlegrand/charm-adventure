@@ -45,7 +45,7 @@ struct Rig {
     body: Entity,
     head: Entity,
     weapon: Entity,
-    swings: [(f32, f32); 3],
+    weapon_axis: f32,
 }
 /// Which character player 1 is shown as (0 Simon, 1 Charm). Tab swaps.
 #[derive(Resource)]
@@ -55,6 +55,9 @@ struct Skin(usize);
 struct Chooser(bool);
 #[derive(Component)]
 struct ChooserText;
+/// F3 shows the collision shapes.
+#[derive(Resource, Default)]
+struct ShowShapes(bool);
 
 #[derive(Deserialize)]
 struct RigFile {
@@ -67,9 +70,7 @@ struct RigFile {
 #[derive(Deserialize)]
 struct CharRig {
     parts: BTreeMap<String, (f32, f32)>,
-    swing_side: (f32, f32),
-    swing_up: (f32, f32),
-    swing_down: (f32, f32),
+    weapon_axis: f32,
 }
 #[derive(Deserialize)]
 struct EnemySprite {
@@ -150,8 +151,9 @@ fn main() {
         .insert_resource(Skin(0))
         .insert_resource(Chooser(true))
         .init_resource::<Art>()
+        .init_resource::<ShowShapes>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, hud, hotkeys).chain())
+        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, hud, hotkeys, shapes).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -230,8 +232,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         let head = part("head", body_at, 0.02);
         let weapon = part("weapon", body_at, 0.03);
         commands.entity(body).add_children(&[back, head, weapon]);
-        let swings = [rig.swing_side, rig.swing_up, rig.swing_down];
-        let root = commands.spawn((Rig { who, leg_b, leg_f, body, head, weapon, swings }, Pose { v: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0], grounded: true, squash: 0.0 }, Transform::default(), Visibility::Hidden)).id();
+        let weapon_axis = rig.weapon_axis;
+        let root = commands.spawn((Rig { who, leg_b, leg_f, body, head, weapon, weapon_axis }, Pose { v: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0], grounded: true, squash: 0.0 }, Transform::default(), Visibility::Hidden)).id();
         commands.entity(root).add_children(&[leg_b, leg_f, body]);
     }
 }
@@ -466,22 +468,17 @@ fn animate(
         for i in 0..8 {
             pose.v[i] += (g[i] - pose.v[i]) * k;
         }
-        // The swing is driven directly, with an eased, widened arc; afterwards it settles back slowly.
-        if attacking {
-            let u = 1.0 - p.attack_t / t.attack_time.max(0.001);
-            let eased = 1.0 - (1.0 - u).powi(3);
-            let (from, to) = rig.swings[match p.attack_dir {
-                AttackDir::Side => 0,
-                AttackDir::Up => 1,
-                AttackDir::Down => 2,
-            }];
-            let wide = (to - from).signum() * 35.0;
-            pose.v[4] = ((from - wide) + (to + wide - (from - wide)) * eased).to_radians() - pose.v[2];
+        // The swing comes straight from the simulation, so the drawn weapon is the line that hits.
+        if let Some((_, _, angle)) = p.weapon(t) {
+            pose.v[4] = (angle - rig.weapon_axis).to_radians() - pose.v[2] - pose.v[5];
         }
         let v = pose.v;
         let sq = pose.squash;
-        tf.translation = Vec3::new(x, y - t.height / 2.0 + bob, 2.0);
-        tf.rotation = Quat::from_rotation_z(v[5] * p.facing);
+        // Lean about the body centre, not the feet, so the figure stays over its collision box.
+        let lean = v[5] * p.facing;
+        let half = t.height / 2.0;
+        tf.translation = Vec3::new(x + lean.sin() * half, y - lean.cos() * half + bob, 2.0);
+        tf.rotation = Quat::from_rotation_z(lean);
         tf.scale = Vec3::new(p.facing * v[6] * (1.0 + 0.22 * sq), v[7] * (1.0 - 0.28 * sq), 1.0);
         for (e, angle) in [(rig.leg_b, v[0] - v[5] * 0.5), (rig.leg_f, v[1] - v[5] * 0.5), (rig.body, v[2]), (rig.head, v[3]), (rig.weapon, v[4])] {
             if let Ok(mut part) = parts.get_mut(e) {
@@ -608,6 +605,7 @@ fn hotkeys(
     mut game: ResMut<Game>,
     mut skin: ResMut<Skin>,
     mut chooser: ResMut<Chooser>,
+    mut show: ResMut<ShowShapes>,
     mut held: Local<bool>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
@@ -633,6 +631,9 @@ fn hotkeys(
             chooser.0 = false;
         }
     }
+    if keys.just_pressed(KeyCode::F3) {
+        show.0 = !show.0;
+    }
     if keys.just_pressed(KeyCode::KeyR) {
         restart(&mut game);
     }
@@ -646,5 +647,40 @@ fn hotkeys(
                 _ => WindowMode::Windowed,
             };
         }
+    }
+}
+
+/// F3: draw what the simulation actually collides with.
+fn shapes(show: Res<ShowShapes>, game: Res<Game>, mut gizmos: Gizmos) {
+    if !show.0 {
+        return;
+    }
+    let t = &game.tuning.player;
+    let w = &game.world;
+    let v = |p: (f32, f32)| Vec2::new(p.0, p.1);
+    for p in &w.players {
+        let (a, b, r) = p.capsule(t);
+        let green = Color::srgb(0.3, 1.0, 0.4);
+        gizmos.circle_2d(v(a), r, green);
+        gizmos.circle_2d(v(b), r, green);
+        gizmos.line_2d(v(a) - Vec2::X * r, v(b) - Vec2::X * r, green);
+        gizmos.line_2d(v(a) + Vec2::X * r, v(b) + Vec2::X * r, green);
+        gizmos.rect_2d(Vec2::new(p.x, p.y), Vec2::new(t.width, t.height), Color::srgba(1.0, 1.0, 1.0, 0.35));
+        if let Some((a, b, _)) = p.weapon(t) {
+            let n = (v(b) - v(a)).normalize_or_zero().perp() * t.weapon_thickness;
+            let yellow = Color::srgb(1.0, 0.9, 0.2);
+            gizmos.line_2d(v(a) + n, v(b) + n, yellow);
+            gizmos.line_2d(v(a) - n, v(b) - n, yellow);
+            gizmos.circle_2d(v(b), t.weapon_thickness, yellow);
+        }
+    }
+    for e in &w.enemies {
+        let Some(et) = game.tuning.enemies.get(&e.kind) else { continue };
+        let o = e.body(et);
+        gizmos.ellipse_2d(Vec2::new(o.x, o.y), Vec2::new(o.rx, o.ry), Color::srgb(1.0, 0.3, 0.3));
+        gizmos.rect_2d(Vec2::new(e.x, e.y), Vec2::new(et.width, et.height), Color::srgba(1.0, 1.0, 1.0, 0.35));
+    }
+    for h in &w.level.hazards {
+        gizmos.rect_2d(Vec2::new(h.0 + h.2 / 2.0, h.1 + h.3 / 2.0), Vec2::new(h.2, h.3), Color::srgb(1.0, 0.4, 1.0));
     }
 }

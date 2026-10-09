@@ -32,8 +32,14 @@
 
         attack_time: 0.14,
         attack_cooldown: 0.32,
-        attack_reach: 62.0,
-        attack_thickness: 44.0,
+        // The weapon is a line from the shoulder swept through an arc; hits follow it exactly.
+        weapon_length: 58.0,
+        weapon_thickness: 7.0,     // half-thickness of that line
+        shoulder_height: 20.0,     // swing pivot above the body centre
+        // Swing arcs in degrees (start, end), facing right: 0 forward, 90 up, -90 down.
+        swing_side: (105.0, -35.0),
+        swing_up: (160.0, 35.0),
+        swing_down: (-15.0, -165.0),
         attack_damage: 5,
         attack_recoil: 160.0,
         pogo_speed: 640.0,
@@ -43,21 +49,23 @@
         knockback_x: 320.0,
         knockback_y: 420.0,
     ),
+    // width and height are the whole tomato including legs; leg is the leg length.
+    // Only the round body above the legs hits and gets hit.
     enemies: {
         "cherry": (
-            width: 30.0, height: 28.0, hp: 10, speed: 70.0,
+            width: 30.0, height: 41.0, leg: 13.5, hp: 10, speed: 70.0,
             contact_damage: 1, knockback: 260.0,
             behaviour: Walker,
             color: (0.95, 0.25, 0.2),
         ),
         "beefsteak": (
-            width: 54.0, height: 48.0, hp: 30, speed: 40.0,
+            width: 54.0, height: 52.0, leg: 16.0, hp: 30, speed: 40.0,
             contact_damage: 1, knockback: 120.0,
             behaviour: Walker,
             color: (0.75, 0.12, 0.1),
         ),
         "hopper": (
-            width: 34.0, height: 32.0, hp: 15, speed: 170.0,
+            width: 34.0, height: 56.0, leg: 25.0, hp: 15, speed: 170.0,
             contact_damage: 1, knockback: 220.0,
             behaviour: Hopper(jump_speed: 620.0, interval: 1.4),
             color: (1.0, 0.5, 0.15),

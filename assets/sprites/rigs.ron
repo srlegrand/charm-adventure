@@ -1,4 +1,4 @@
-// Written by design/export.py. Pivots are PNG pixels. Angles are degrees, for a figure facing right.
+// Written by design/export.py. Pivots are PNG pixels. weapon_axis is the direction the weapon points in the artwork, in degrees, facing right.
 (
     canvas: (240, 280),
     origin: (120, 265),
@@ -12,9 +12,7 @@
                 "weapon": (95.0, 106.0),
                 "head": (120.0, 87.0),
             },
-            swing_side: (-150, -250),
-            swing_up: (-120, -210),
-            swing_down: (60, -20),
+            weapon_axis: -113.9,
         ),
         "charm": (
             parts: {
@@ -25,15 +23,13 @@
                 "weapon": (131.0, 104.0),
                 "head": (120.0, 87.0),
             },
-            swing_side: (120, 40),
-            swing_up: (180, 110),
-            swing_down: (-50, 20),
+            weapon_axis: -65.6,
         ),
     },
     enemies: {
-        "cherry": (file: "sprites/tomatoes/cherry.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5625),
-        "beefsteak": (file: "sprites/tomatoes/beefsteak.png", size: (240, 240), origin: (120, 228), units_per_px: 0.9310),
-        "hopper": (file: "sprites/tomatoes/hopper.png", size: (240, 240), origin: (120, 228), units_per_px: 1.4167),
+        "cherry": (file: "sprites/tomatoes/cherry.png", size: (240, 240), origin: (120, 228), units_per_px: 1.2500),
+        "beefsteak": (file: "sprites/tomatoes/beefsteak.png", size: (240, 240), origin: (120, 228), units_per_px: 0.7450),
+        "hopper": (file: "sprites/tomatoes/hopper.png", size: (240, 240), origin: (120, 228), units_per_px: 1.1340),
         "plum": (file: "sprites/tomatoes/plum.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
         "greenie": (file: "sprites/tomatoes/greenie.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
         "vine_flyer": (file: "sprites/tomatoes/vine_flyer.png", size: (240, 240), origin: (120, 228), units_per_px: 1.5000),
