@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const DT: f32 = 1.0 / 60.0;
+/// Flowers that make one heart when sent to the partner.
+pub const FLOWERS_PER_HEART: u32 = 10;
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Input {
@@ -179,6 +181,8 @@ pub struct Player {
     pub swing_fresh: bool,
     /// Flowers collected.
     pub score: u32,
+    /// Flowers in hand. Ten of them can be sent to the partner, where they become a heart.
+    pub flowers: u32,
     /// Kills chained so far, and the time left to add another.
     pub combo: u32,
     pub combo_t: f32,
@@ -214,10 +218,11 @@ pub enum Event {
     Swing { player: usize },
     Dash { player: usize },
     Hit { x: f32, y: f32, dir: f32 },
-    Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32, combo: u32 },
+    Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32, combo: u32, player: usize },
     Hurt { x: f32, y: f32 },
     /// A life passed from one player to the other.
-    Give { from: usize, to: usize, heart: bool },
+    /// Ten flowers sent across, becoming a heart for the partner.
+    Give { from: usize, to: usize },
     Down { player: usize },
 }
 
@@ -229,10 +234,6 @@ pub struct World {
     pub tick: u32,
     /// Ticks left of the freeze that follows a hit.
     pub hitstop: u32,
-    /// Flowers collected by the team. Every ten make a heart.
-    pub flowers: u32,
-    /// Spare hearts the team holds. A heart is one life, for whoever it is passed to.
-    pub hearts: u32,
     pub events: Vec<Event>,
 }
 
@@ -315,7 +316,7 @@ impl Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
             air_dash_ready: true, dash_t: 0.0, dash_cd: 0.0, sprinting: false, wall_lock: 0.0,
-            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, combo: 0, combo_t: 0.0, swing_alt: false, down: false, safe_x: x, safe_y: y,
+            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, flowers: 0, combo: 0, combo_t: 0.0, swing_alt: false, down: false, safe_x: x, safe_y: y,
             prev: Input::default(),
         }
     }
@@ -405,7 +406,7 @@ impl World {
                 })
             })
             .collect();
-        World { level, players, enemies, tick: 0, hitstop: 0, flowers: 0, hearts: 0, events: Vec::new() }
+        World { level, players, enemies, tick: 0, hitstop: 0, events: Vec::new() }
     }
 
     pub fn step(&mut self, inputs: &[Input], tuning: &Tuning) {
@@ -431,50 +432,41 @@ impl World {
             return;
         }
         self.tick += 1;
-        // The give button. With a spare heart: it goes to the partner if they need it, otherwise to yourself.
-        // With no hearts, in a two-player game, you pass one of your own lives across.
+        // The give button: send ten of your flowers to your partner, where they become a heart (one life).
+        // You cannot make hearts for yourself.
         let count = self.players.len();
-        for from in 0..count {
-            let inp = inputs.get(from).copied().unwrap_or_default();
-            if !(inp.give && !self.players[from].prev.give) || self.players[from].down {
-                continue;
+        if count == 2 {
+            for from in 0..2 {
+                let to = 1 - from;
+                let inp = inputs.get(from).copied().unwrap_or_default();
+                let pressed = inp.give && !self.players[from].prev.give;
+                let (giver, taker) = (&self.players[from], &self.players[to]);
+                if !pressed || giver.down || giver.flowers < FLOWERS_PER_HEART || !(taker.down || taker.hp < t.max_hp) {
+                    continue;
+                }
+                let (gx, gy, face) = (giver.x, giver.y, giver.facing);
+                self.players[from].flowers -= FLOWERS_PER_HEART;
+                let p = &mut self.players[to];
+                if p.down {
+                    let (score, flowers) = (p.score, p.flowers);
+                    *p = Player::new(gx, gy, t);
+                    (p.score, p.flowers) = (score, flowers);
+                    p.hp = 1;
+                    p.facing = face;
+                    p.invuln = t.invuln_time * 2.0;
+                } else {
+                    p.hp += 1;
+                }
+                self.events.push(Event::Give { from, to });
             }
-            let other = if count == 2 { Some(1 - from) } else { None };
-            let needs = |p: &Player| p.down || p.hp < t.max_hp;
-            let to = match other {
-                Some(o) if needs(&self.players[o]) => o,
-                _ if self.hearts > 0 && needs(&self.players[from]) => from,
-                _ => continue,
-            };
-            let heart = self.hearts > 0;
-            if heart {
-                self.hearts -= 1;
-            } else if to != from && self.players[from].hp > 1 {
-                self.players[from].hp -= 1;
-            } else {
-                continue;
-            }
-            let (gx, gy, face) = (self.players[from].x, self.players[from].y, self.players[from].facing);
-            let p = &mut self.players[to];
-            if p.down {
-                let score = p.score;
-                *p = Player::new(gx, gy, t);
-                p.score = score;
-                p.hp = 1;
-                p.facing = face;
-                p.invuln = t.invuln_time * 2.0;
-            } else {
-                p.hp += 1;
-            }
-            self.events.push(Event::Give { from, to, heart });
         }
         // Both down: everyone gets back up at the start.
         if count == 2 && self.players.iter().all(|p| p.down) {
             for (i, p) in self.players.iter_mut().enumerate() {
                 let s = self.level.spawns[i % self.level.spawns.len()];
-                let score = p.score;
+                let (score, flowers) = (p.score, p.flowers);
                 *p = Player::new(s.0, s.1, t);
-                p.score = score;
+                (p.score, p.flowers) = (score, flowers);
             }
         }
         let solo = self.players.len() < 2;
@@ -639,9 +631,9 @@ impl World {
             }
             if p.hp <= 0 && solo {
                 let s = self.level.spawns[i % self.level.spawns.len()];
-                let score = p.score;
+                let (score, flowers) = (p.score, p.flowers);
                 *p = Player::new(s.0, s.1, t);
-                p.score = score;
+                (p.score, p.flowers) = (score, flowers);
             } else if p.hp <= 0 {
                 p.hp = 0;
                 p.down = true;
@@ -704,7 +696,6 @@ impl World {
             if p.swing_fresh {
                 p.swing_fresh = false;
                 let sweep = p.weapon_arc(t);
-                let _ = i;
                 let mut connected = false;
                 let mut killed = false;
                 for e in self.enemies.iter_mut() {
@@ -722,10 +713,9 @@ impl World {
                         // Each link in the chain is worth one more flower, up to five extra.
                         let flowers = et.flowers + (p.combo - 1).min(5);
                         p.score += flowers;
-                        self.hearts += (self.flowers + flowers) / 10 - self.flowers / 10;
-                        self.flowers += flowers;
+                        p.flowers += flowers;
                         self.hitstop = self.hitstop.max(t.hitstop_kill);
-                        self.events.push(Event::Kill { x: body.x, y: body.y, kind: e.kind.clone(), flowers, dir, combo: p.combo });
+                        self.events.push(Event::Kill { x: body.x, y: body.y, kind: e.kind.clone(), flowers, dir, combo: p.combo, player: i });
                     } else {
                         self.hitstop = self.hitstop.max(t.hitstop_hit);
                         self.events.push(Event::Hit { x: body.x, y: body.y, dir });
@@ -901,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn passing_a_life_heals_and_revives() {
+    fn sending_flowers_makes_a_heart_for_the_partner() {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
         let level = Level {
             name: "test".into(),
@@ -915,36 +905,33 @@ mod tests {
         let none = Input::default();
         let give = Input { give: true, ..Default::default() };
         let max = tuning.player.max_hp;
-        // Nothing to give when the partner is full.
-        w.step(&[give, none], &tuning);
-        assert_eq!((w.players[0].hp, w.players[1].hp), (max, max));
-        w.step(&[none, none], &tuning);
-        // Partner hurt: one life moves across.
+        // Not enough flowers: nothing happens, and your own lives are never spent.
+        w.players[0].flowers = 9;
         w.players[1].hp = 2;
         w.step(&[give, none], &tuning);
-        assert_eq!((w.players[0].hp, w.players[1].hp), (max - 1, 3));
-        // Holding the button does not drain the giver.
-        w.step(&[give, none], &tuning);
-        assert_eq!(w.players[0].hp, max - 1);
+        assert_eq!((w.players[0].hp, w.players[1].hp, w.players[0].flowers), (max, 2, 9));
         w.step(&[none, none], &tuning);
-        // Partner out of lives goes down, and a passed life brings them back beside the giver.
+        // Ten flowers become one heart for the partner.
+        w.players[0].flowers = 23;
+        w.step(&[give, none], &tuning);
+        assert_eq!((w.players[0].hp, w.players[1].hp, w.players[0].flowers), (max, 3, 13));
+        // Holding the button sends once.
+        w.step(&[give, none], &tuning);
+        assert_eq!(w.players[0].flowers, 13);
+        w.step(&[none, none], &tuning);
+        // A downed partner is brought back beside the sender.
         w.players[1].hp = 0;
         w.step(&[none, none], &tuning);
         assert!(w.players[1].down);
         w.step(&[give, none], &tuning);
         assert!(!w.players[1].down);
-        assert_eq!((w.players[0].hp, w.players[1].hp), (max - 2, 1));
+        assert_eq!((w.players[1].hp, w.players[0].flowers), (1, 3));
         assert!((w.players[1].x - w.players[0].x).abs() < 5.0);
-        // The last life cannot be given away.
-        w.players[0].hp = 1;
-        w.players[1].hp = 1;
+        // A partner on full lives is not sent anything.
+        w.players[0].flowers = 10;
+        w.players[1].hp = max;
         w.step(&[none, none], &tuning);
         w.step(&[give, none], &tuning);
-        assert_eq!((w.players[0].hp, w.players[1].hp), (1, 1));
-        // A spare heart is spent before your own lives.
-        w.hearts = 1;
-        w.step(&[none, none], &tuning);
-        w.step(&[give, none], &tuning);
-        assert_eq!((w.players[0].hp, w.players[1].hp, w.hearts), (1, 2, 0));
+        assert_eq!(w.players[0].flowers, 10);
     }
 }

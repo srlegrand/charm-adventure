@@ -176,7 +176,6 @@ struct Art {
 struct Juice {
     events: Vec<sim::Event>,
     shake: f32,
-    shown_score: u32,
     pulse: f32,
     seed: u32,
 }
@@ -208,8 +207,8 @@ struct Flower {
     vel: Vec2,
     age: f32,
     delay: f32,
-    /// Which screen's bouquet it flies to.
-    cam: usize,
+    /// Whose bouquet it flies to.
+    player: usize,
 }
 
 fn asset_dir() -> PathBuf {
@@ -908,7 +907,6 @@ fn hud(
     game: Res<Game>,
     skin: Res<Skin>,
     chooser: Res<Chooser>,
-    juice: Res<Juice>,
     pads: Query<&Gamepad>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
@@ -920,11 +918,11 @@ fn hud(
     };
     let lives: Vec<String> = game.world.players.iter().enumerate().map(|(i, q)| {
         let who = if (skin.0 + i) % 2 == 0 { "SIMON" } else { "CHARM" };
-        format!("{who} {}/{}{}", q.hp, game.tuning.player.max_hp, if q.down { " DOWN" } else { "" })
+        format!("{who} {}/{}{}  flowers {}", q.hp, game.tuning.player.max_hp, if q.down { " DOWN" } else { "" }, q.flowers)
     }).collect();
     let line = format!(
-        "{}   Flowers {}{}   Hearts {}   Tomatoes {}   {}   {}\n{}",
-        lives.join("   "), juice.shown_score, if juice.pulse > 0.0 { " +" } else { "" }, game.world.hearts, game.world.enemies.len(), game.world.level.name, pad, game.status
+        "{}   Tomatoes {}   {}   {}\n{}",
+        lives.join("     "), game.world.enemies.len(), game.world.level.name, pad, game.status
     );
     if text.0 != line {
         text.0 = line;
@@ -933,7 +931,7 @@ fn hud(
         let want = if chooser.0 {
             let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
             let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
-            let how = if game.players == 1 { "" } else { "\n\nPlayer 1 picks; player 2 is the other.\nOne controller: keyboard is player 1, controller is player 2.\nTwo controllers: one each. F2 switches split screen on and off.\nPass a life: B on the controller, G on the keyboard" };
+            let how = if game.players == 1 { "" } else { "\n\nPlayer 1 picks; player 2 is the other.\nOne controller: keyboard is player 1, controller is player 2.\nTwo controllers: one each. F2 switches split screen on and off.\nSend 10 flowers to your partner as a heart: B on the controller, G on the keyboard" };
             format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\n{n}\n\nLeft / Right: character     Up / Down: players\nA, Space or Enter to start{how}")
         } else if game.world.players.iter().any(|q| q.combo >= 2) {
             format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
@@ -1110,15 +1108,22 @@ fn juice(
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 8, 420.0, 22.0, white, dir);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 5, 260.0, 8.0, Color::srgb(0.85, 0.2, 0.18), dir);
             }
-            sim::Event::Give { from, to, heart } => {
+            sim::Event::Give { from, to } => {
                 if let (Some(a0), Some(b0)) = (at(from), at(to)) {
+                    // Ten flowers stream across and burst into a heart on the partner.
                     let pink = Color::srgb(3.0, 1.2, 1.8);
-                    light(&mut commands, b0, 300.0, 0.3, 0.3);
-                    for i in 0..5 {
-                        let life = 0.22 + i as f32 * 0.03;
-                        spawn_fx(&mut commands, Sprite::from_color(pink, Vec2::splat(7.0)), a0, 4.5, 0.785, Fx { vel: (b0 - a0) / life, gravity: 0.0, drag: 0.0, life, max: life, spin: 8.0, grow: 0.0 });
+                    light(&mut commands, b0, 300.0, 0.3, 0.45);
+                    for i in 0..10 {
+                        let life = 0.25 + i as f32 * 0.03;
+                        let mut s = Sprite::from_image(art.flowers.get(i % art.flowers.len().max(1)).cloned().unwrap_or_default());
+                        s.custom_size = Some(Vec2::splat(15.0));
+                        let arc = 60.0 + juice.rand() * 80.0;
+                        spawn_fx(&mut commands, s, a0, 4.5, 0.0, Fx { vel: (b0 - a0) / life + Vec2::Y * arc, gravity: 2.0 * arc / life, drag: 0.0, life, max: life, spin: 8.0, grow: 0.0 });
                     }
-                    burst(&mut commands, &mut juice, b0, if heart { 18 } else { 10 }, 300.0, 16.0, pink, 0.0);
+                    let mut heart = Sprite::from_image(art.heart.clone());
+                    heart.custom_size = Some(Vec2::splat(26.0));
+                    spawn_fx(&mut commands, heart, b0 + Vec2::Y * 40.0, 4.6, 0.0, Fx { vel: Vec2::Y * 60.0, gravity: 0.0, drag: 1.0, life: 0.9, max: 0.9, spin: 0.0, grow: 0.6 });
+                    burst(&mut commands, &mut juice, b0, 16, 300.0, 16.0, pink, 0.0);
                 }
             }
             sim::Event::Down { player } => {
@@ -1131,7 +1136,7 @@ fn juice(
                 juice.shake = juice.shake.max(9.0);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 10, 380.0, 18.0, white, 0.0);
             }
-            sim::Event::Kill { x, y, kind, flowers, dir, combo } => {
+            sim::Event::Kill { x, y, kind, flowers, dir, combo, player } => {
                 juice.shake = juice.shake.max(6.0 + combo.min(6) as f32);
                 let pos = Vec2::new(x, y);
                 light(&mut commands, pos, 380.0, 0.28, 0.2);
@@ -1185,9 +1190,7 @@ fn juice(
                     let pick = (juice.rand() * art.flowers.len() as f32) as usize % art.flowers.len().max(1);
                     let mut sprite = Sprite::from_image(art.flowers.get(pick).cloned().unwrap_or_default());
                     sprite.custom_size = Some(Vec2::splat(13.0 + juice.rand() * 5.0));
-                    // In split screen the flowers fly to the bouquet on the screen of whoever is nearest.
-                    let cam = if views.split { w.players.iter().enumerate().filter(|(_, p)| !p.down).min_by(|a, b| (a.1.x - x).abs().total_cmp(&(b.1.x - x).abs())).map(|(i, _)| i).unwrap_or(0) } else { 0 };
-                    commands.spawn((sprite, Transform::from_translation(pos.extend(5.0)), Flower { vel: v, age: 0.0, delay: 0.3 + i as f32 * 0.045, cam }));
+                    commands.spawn((sprite, Transform::from_translation(pos.extend(5.0)), Flower { vel: v, age: 0.0, delay: 0.3 + i as f32 * 0.045, player }));
                 }
             }
         }
@@ -1231,61 +1234,74 @@ fn juice(
 
     // Flowers burst out, hang for a moment, then fly to the score in the corner.
     juice.pulse = (juice.pulse - dt).max(0.0);
-    {
-        let goal_of = |c: usize| { let c = if views.split { c.min(1) } else { 0 }; views.pos[c] + Vec2::new(-views.half[c].x + 50.0, views.half[c].y - 56.0) };
-        let mut made_heart = None;
-        for (e, mut f, mut tf) in &mut flowers {
-            f.age += dt;
-            let pos = tf.translation.truncate();
-            if f.age < f.delay {
-                f.vel *= (-4.0 * dt).exp();
-                f.vel.y -= 300.0 * dt;
-            } else {
-                let goal = goal_of(f.cam);
-                let to = goal - pos;
-                if to.length() < 14.0 {
-                    commands.entity(e).despawn();
-                    juice.shown_score += 1;
-                    juice.pulse = 0.15;
-                    if juice.shown_score % 10 == 0 {
-                        made_heart = Some(goal);
-                    }
-                    continue;
-                }
-                let speed = (300.0 + (f.age - f.delay) * 2600.0).min(1800.0);
-                f.vel = f.vel.lerp(to.normalize() * speed, (12.0 * dt).min(1.0));
+    for (e, mut f, mut tf) in &mut flowers {
+        f.age += dt;
+        let pos = tf.translation.truncate();
+        if f.age < f.delay {
+            f.vel *= (-4.0 * dt).exp();
+            f.vel.y -= 300.0 * dt;
+        } else {
+            let goal = bouquet_base(&views, f.player) + Vec2::Y * 30.0;
+            let to = goal - pos;
+            if to.length() < 14.0 {
+                commands.entity(e).despawn();
+                juice.pulse = 0.15;
+                continue;
             }
-            tf.translation += (f.vel * dt).extend(0.0);
-            tf.rotate_z(5.0 * dt);
+            let speed = (300.0 + (f.age - f.delay) * 2600.0).min(1800.0);
+            f.vel = f.vel.lerp(to.normalize() * speed, (12.0 * dt).min(1.0));
         }
-        if let Some(goal) = made_heart {
-            // Ten flowers: the bouquet bursts into a heart.
-            let pink = Color::srgb(3.0, 1.2, 1.8);
-            light(&mut commands, goal, 260.0, 0.4, 0.35);
-            burst(&mut commands, &mut juice, goal, 14, 260.0, 14.0, pink, 0.0);
-            juice.pulse = 0.4;
-        }
-    }
-    // Keep the shown score honest after a restart or if a flower was lost.
-    let real = w.flowers;
-    if flowers.is_empty() && juice.shown_score != real {
-        juice.shown_score = real;
+        tf.translation += (f.vel * dt).extend(0.0);
+        tf.rotate_z(5.0 * dt);
     }
 }
 
-/// The bouquet in the top-left corner: one flower per flower collected, bursting into a heart at ten.
-fn bouquet(game: Res<Game>, juice: Res<Juice>, views: Res<Views>, mut bits: Query<(&HudBit, &mut Transform, &mut Visibility), Without<Divider>>, mut divider: Query<&mut Visibility, With<Divider>>) {
+/// Where a player's bouquet sits. Split screen: top-left of their own half.
+/// One shared view: player 1 top-left, player 2 top-right.
+fn bouquet_base(views: &Views, player: usize) -> Vec2 {
+    if views.split {
+        let c = player.min(1);
+        views.pos[c] + Vec2::new(-views.half[c].x + 50.0, views.half[c].y - 88.0)
+    } else if player == 0 {
+        views.pos[0] + Vec2::new(-views.half[0].x + 50.0, views.half[0].y - 88.0)
+    } else {
+        views.pos[0] + Vec2::new(views.half[0].x - 190.0, views.half[0].y - 88.0)
+    }
+}
+
+/// Each player's bouquet: one flower per flower in hand, and a heart for every ten, ready to send to the partner.
+#[allow(clippy::too_many_arguments)]
+fn bouquet(
+    mut commands: Commands,
+    game: Res<Game>,
+    juice: Res<Juice>,
+    views: Res<Views>,
+    flying: Query<&Flower>,
+    mut bits: Query<(Entity, &HudBit, &mut Transform, &mut Visibility), Without<Divider>>,
+    mut divider: Query<&mut Visibility, With<Divider>>,
+    mut was_split: Local<Option<bool>>,
+) {
     if let Ok(mut v) = divider.single_mut() {
         *v = if views.split { Visibility::Visible } else { Visibility::Hidden };
     }
-    let held = (juice.shown_score % 10) as usize;
-    let hearts = game.world.hearts as usize;
-    for (bit, mut tf, mut vis) in &mut bits {
-        if bit.cam == 1 && !views.split {
+    // In one shared view both bouquets are drawn by the first camera.
+    let relayer = *was_split != Some(views.split);
+    *was_split = Some(views.split);
+    let players = &game.world.players;
+    for (e, bit, mut tf, mut vis) in &mut bits {
+        if relayer {
+            commands.entity(e).insert(RenderLayers::layer(if views.split { bit.cam + 1 } else { 1 }));
+        }
+        let Some(p) = players.get(bit.cam) else {
             *vis = Visibility::Hidden;
             continue;
-        }
-        let base = views.pos[bit.cam] + Vec2::new(-views.half[bit.cam].x + 50.0, views.half[bit.cam].y - 88.0);
+        };
+        // Flowers still in the air are not in the bunch yet.
+        let in_air = flying.iter().filter(|f| f.player == bit.cam).count() as u32;
+        let have = p.flowers.saturating_sub(in_air);
+        let held = (have % sim::FLOWERS_PER_HEART) as usize;
+        let hearts = (have / sim::FLOWERS_PER_HEART) as usize;
+        let base = bouquet_base(&views, bit.cam);
         let (show, pos, pop) = match bit.kind {
             0 => (true, base, false),
             1 => {
@@ -1293,9 +1309,9 @@ fn bouquet(game: Res<Game>, juice: Res<Juice>, views: Res<Views>, mut bits: Quer
                 let step = ((bit.i + 1) / 2) as f32 * if bit.i % 2 == 0 { 1.0 } else { -1.0 };
                 let a = (step * 13.0f32).to_radians();
                 let r = 12.0 + (bit.i % 3) as f32 * 7.0;
-                (bit.i < held, base + Vec2::new(a.sin() * r, 14.0 + a.cos() * r), bit.i + 1 == held)
+                (bit.i < held, base + Vec2::new(a.sin() * r, 14.0 + a.cos() * r), bit.i + 1 == held && juice.pulse > 0.0)
             }
-            _ => (bit.i < hearts, base + Vec2::new(60.0 + bit.i as f32 * 23.0, 8.0), bit.i + 1 == hearts && juice.pulse > 0.15),
+            _ => (bit.i < hearts, base + Vec2::new(60.0 + bit.i as f32 * 23.0, 8.0), false),
         };
         *vis = if show { Visibility::Visible } else { Visibility::Hidden };
         tf.translation = pos.extend(6.0 + bit.kind as f32 * 0.01);

@@ -36,7 +36,7 @@ Keep the `assets` folder next to the game; it will not start without it.
 | Jump | A | Space / Z |
 | Attack (hold up or down to aim) | X | X / J / left click |
 | Dash (hold to sprint) | Right trigger | C / K / Left Shift / right click |
-| Pass a heart or a life | B | G / Q |
+| Send 10 flowers to your partner as a heart | B | G / Q |
 | Character and player menu | View / Select | Tab |
 | Split screen on and off | | F2 |
 | Show collision shapes | | F3 |
@@ -46,7 +46,7 @@ Keep the `assets` folder next to the game; it will not start without it.
 
 Pick "2 PLAYERS" in the menu. With one controller, the keyboard is player 1 and the controller is player 2. With two controllers, each player gets one. The screen splits down the middle; F2 switches to one shared camera.
 
-Kill tomatoes to collect flowers. Ten flowers make a heart, and a heart is a spare life you can pass to your partner. A player with no lives left goes down until their partner passes one over.
+Kill tomatoes to collect flowers into your bouquet. Send ten flowers to your partner and they become a heart: one life for them. You cannot make hearts for yourself. A player with no lives left goes down until their partner sends them a heart.
 
 ## Make it yours
 
