@@ -6,7 +6,9 @@
     name: "The Rootway",
     theme: "cellar",
     // No door here: the way on is chosen in the story (see assets/story/rootway.ron).
-    exits: [],
+    exits: [
+        (rect: (9160.0, 100.0, 160.0, 320.0), to: "australia"),
+    ],
     bounds: (0.0, 0.0, 9400.0, 1900.0),
     spawns: [(200.0, 160.0), (260.0, 160.0)],
     solids: [

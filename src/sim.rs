@@ -153,6 +153,10 @@ pub struct Level {
     #[serde(default)]
     pub hazards: Vec<Rect>,
     pub enemies: Vec<EnemySpawn>,
+    /// People who stand in the level and take no part in the fighting: "boss", and "partner"
+    /// (whichever of Simon and Charm nobody is playing).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actors: Vec<EnemySpawn>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -327,7 +331,7 @@ fn move_body(x: &mut f32, y: &mut f32, vx: &mut f32, vy: &mut f32, w: f32, h: f3
 }
 
 impl Player {
-    fn new(x: f32, y: f32, t: &PlayerTuning) -> Self {
+    pub fn new(x: f32, y: f32, t: &PlayerTuning) -> Self {
         Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
@@ -828,6 +832,7 @@ mod tests {
     fn setup() -> (World, Tuning) {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
         let level = Level {
+            actors: vec![],
             name: "test".into(),
             bounds: Rect(0.0, 0.0, 2000.0, 1000.0),
             spawns: vec![(500.0, 100.0)],
@@ -847,7 +852,7 @@ mod tests {
     #[test]
     fn shipped_assets_parse() {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
-        for text in [include_str!("../assets/levels/rootway.ron"), include_str!("../assets/levels/glasshouse.ron"), include_str!("../assets/levels/cannery.ron")] {
+        for text in [include_str!("../assets/levels/rootway.ron"), include_str!("../assets/levels/australia.ron"), include_str!("../assets/levels/newzealand.ron"), include_str!("../assets/levels/france.ron"), include_str!("../assets/levels/uk.ron")] {
             let level = load_level(text).unwrap();
             assert!(!level.spawns.is_empty());
             // Nobody starts inside rock or on thorns, and every tomato is a known kind.
@@ -865,16 +870,16 @@ mod tests {
     fn exits_carry_lives_and_flowers_to_the_next_level() {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
         let mut a = load_level(include_str!("../assets/levels/rootway.ron")).unwrap();
-        a.exits = vec![Exit { rect: Rect(0.0, 0.0, 400.0, 400.0), to: "glasshouse".into() }];
-        let b = load_level(include_str!("../assets/levels/glasshouse.ron")).unwrap();
+        a.exits = vec![Exit { rect: Rect(0.0, 0.0, 400.0, 400.0), to: "australia".into() }];
+        let b = load_level(include_str!("../assets/levels/australia.ron")).unwrap();
         let mut w = World::new(a, &tuning, 1);
         w.players[0].hp = 3;
         w.players[0].flowers = 7;
         w.step(&[Input::default()], &tuning);
-        assert_eq!(w.exit.as_deref(), Some("glasshouse"));
+        assert_eq!(w.exit.as_deref(), Some("australia"));
         w.travel(b, &tuning);
         assert_eq!((w.players[0].hp, w.players[0].flowers, w.exit.is_none()), (3, 7, true));
-        assert_eq!(w.level.name, "The Glasshouse");
+        assert_eq!(w.level.name, "Australia");
     }
 
     #[test]
@@ -967,6 +972,7 @@ mod tests {
     fn sending_flowers_makes_a_heart_for_the_partner() {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
         let level = Level {
+            actors: vec![],
             name: "test".into(),
             bounds: Rect(0.0, 0.0, 2000.0, 1000.0),
             spawns: vec![(500.0, 100.0), (700.0, 100.0)],

@@ -165,49 +165,144 @@ shutil.copy(f'{OUT}/bg/far.png', f'{OUT}/bg/cellar_far.png'); shutil.copy(f'{OUT
 for name in PROPS:
     if name.startswith('props/'): shutil.copy(f'{OUT}/{name}.png', f'{OUT}/props/cellar/{name[6:]}.png')
 
-# glasshouse: bright daylight under white iron and glass
-R = random.Random(3)
-gd = """<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fd6e8"/><stop offset=".6" stop-color="#d8f2e4"/><stop offset="1" stop-color="#f6f0c8"/></linearGradient>
-<filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="20"/></filter><filter id="b3" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter></defs>"""
-far = [gd, '<rect width="1600" height="1000" fill="url(#sky)"/>', '<circle cx="1180" cy="210" r="210" fill="#fff8d0" opacity=".7" filter="url(#soft)"/><circle cx="1180" cy="210" r="70" fill="#fffbe6"/>']
-for i in range(7):
-    x = R.uniform(0, 1600); y = R.uniform(60, 420); w = R.uniform(120, 260)
-    far.append(f'<ellipse cx="{x:.0f}" cy="{y:.0f}" rx="{w:.0f}" ry="{w*.22:.0f}" fill="#ffffff" opacity=".55" filter="url(#b3)"/>')
-far.append('<path d="M0,1000 L0,700 Q200,600 400,680 T800,650 T1200,690 T1600,640 L1600,1000Z" fill="#9fd9a0" opacity=".8"/><path d="M0,1000 L0,790 Q260,700 520,770 T1040,750 T1600,780 L1600,1000Z" fill="#7cc487" opacity=".9"/>')
-ribs = ''
-for x in range(0, 1601, 200): ribs += f'<path d="M{x},1000 L{x},260 Q{x+100},60 {x+200},260" stroke="#ffffff" stroke-width="9" fill="none" opacity=".75"/>'
-for y in (260, 460, 660): ribs += f'<path d="M0,{y} H1600" stroke="#ffffff" stroke-width="5" opacity=".6"/>'
-far.append(ribs)
-mid = [gd, '<g filter="url(#b3)">']
-for x, s in [(120, 1.0), (520, .8), (1010, 1.15), (1420, .9)]:
-    leaves = ''.join(f'<path transform="rotate({a} {x} 1000)" d="M{x},1000 C{x-60*s},{820-160*s:.0f} {x-40*s},{640-200*s:.0f} {x},{520-220*s:.0f} C{x+40*s},{640-200*s:.0f} {x+60*s},{820-160*s:.0f} {x},1000Z" fill="{c}"/>' for a, c in [(-38, '#3f9a5a'), (-16, '#57b06a'), (8, '#3f9a5a'), (30, '#6cc47c'), (52, '#4aa862')])
-    mid.append(leaves)
-mid.append('</g><rect x="-100" y="700" width="1800" height="240" fill="#ffffff" opacity=".18" filter="url(#soft)"/>')
-themed('glasshouse', {'#8a5a2c': '#f0a878', '#3a2414': '#c8643a', '#120b08': '#8a3a1c', '#e8b070': '#ffe0c8',
-                      '#ffd08a': '#ffe0f0', '#e8823a': '#ff7ab0', '#8a3414': '#b03a70', '#fff3d0': '#ffffff',
-                      '#35502a': '#2f7a3a', '#4c8a3c': '#6cc85a', '#1c110b': '#4a6a3a', '#6a4020': '#a8dc7a',
-                      '#170e09': '#f2faf4', '#5a3418': '#a8cfc0'}, ''.join(far), ''.join(mid))
+def defs(c0, c1, c2):
+    return f"""<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{c0}"/><stop offset=".6" stop-color="{c1}"/><stop offset="1" stop-color="{c2}"/></linearGradient>
+<filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="20"/></filter><filter id="b3" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter><filter id="b6" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6"/></filter></defs>"""
+SKY = '<rect width="1600" height="1000" fill="url(#sky)"/>'
 
-# cannery: cold steel at night, lit by neon
-R = random.Random(8)
-cd = """<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#070a1c"/><stop offset=".6" stop-color="#151238"/><stop offset="1" stop-color="#2a1444"/></linearGradient>
-<filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="22"/></filter><filter id="b3" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter><filter id="b6" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6"/></filter></defs>"""
-far = [cd, '<rect width="1600" height="1000" fill="url(#sky)"/>']
-tanks = ''
-for x, w, h in [(80, 220, 620), (420, 160, 480), (700, 260, 700), (1080, 180, 540), (1340, 240, 660)]:
-    tanks += f'<path d="M{x},1000 L{x},{1000-h+w/2:.0f} Q{x+w/2:.0f},{1000-h-w/3:.0f} {x+w},{1000-h+w/2:.0f} L{x+w},1000Z" fill="#101632"/>'
-    for k in range(3): tanks += f'<path d="M{x},{1000-h+w/2+60+k*150:.0f} H{x+w}" stroke="#1e2850" stroke-width="8"/>'
-far.append(f'<g filter="url(#b6)">{tanks}</g>')
-for x, y, c in [(300, 300, '#ff3a9a'), (860, 220, '#4fd0ff'), (1260, 380, '#ff3a9a'), (620, 520, '#4fd0ff')]:
-    far.append(f'<circle cx="{x}" cy="{y}" r="150" fill="{c}" opacity=".16" filter="url(#soft)"/><rect x="{x-46}" y="{y-12}" width="92" height="24" rx="12" fill="none" stroke="{c}" stroke-width="6" opacity=".85"/>')
-for i in range(40):
-    far.append(f'<circle cx="{R.uniform(0,1600):.0f}" cy="{R.uniform(0,600):.0f}" r="{R.uniform(.8,2.2):.1f}" fill="#cfe6ff" opacity="{R.uniform(.2,.7):.2f}"/>')
-mid = [cd, '<g filter="url(#b3)"><path d="M0,330 H1600 M0,372 H1600" stroke="#0c1026" stroke-width="26"/><path d="M0,330 H1600" stroke="#2a3466" stroke-width="4"/>']
-for x in range(60, 1600, 260):
-    mid.append(f'<path d="M{x},330 V1000" stroke="#0c1026" stroke-width="34"/><path d="M{x-10},330 V1000" stroke="#2a3466" stroke-width="4"/><path d="M{x-17},420 h34 M{x-17},620 h34 M{x-17},820 h34" stroke="#2a3466" stroke-width="6"/>')
-mid.append('<path d="M0,720 Q400,690 800,730 T1600,700" stroke="#0c1026" stroke-width="22" fill="none"/></g><rect x="-100" y="760" width="1800" height="220" fill="#ff3a9a" opacity=".08" filter="url(#soft)"/>')
-themed('cannery', {'#8a5a2c': '#d0d8ea', '#3a2414': '#6a7494', '#120b08': '#20283c', '#e8b070': '#ffffff',
-                   '#ffd08a': '#e6ffff', '#e8823a': '#4fd0ff', '#8a3414': '#1a5a9a', '#fff3d0': '#ffffff',
-                   '#35502a': '#2a3048', '#4c8a3c': '#5a6484', '#1c110b': '#1a2034', '#6a4020': '#4fd0ff',
-                   '#170e09': '#0e1428', '#5a3418': '#b03a9a', '#d8392f': '#ff3a9a'}, ''.join(far), ''.join(mid))
+# australia: red desert under a huge low sun, the great rock on the horizon, gum trees and a kangaroo
+R = random.Random(21)
+d = defs('#ffb347', '#ff7a2e', '#d8401c')
+far = [d, SKY, '<circle cx="1150" cy="430" r="330" fill="#fff0a0" opacity=".55" filter="url(#soft)"/><circle cx="1150" cy="430" r="150" fill="#fff6c8"/>']
+far.append('<path d="M120,700 C150,560 240,520 330,512 C520,496 760,500 900,520 C990,534 1040,600 1070,700Z" fill="#8a2414"/><path d="M330,512 C360,580 350,640 340,700 M520,502 C540,580 530,650 540,700 M740,506 C730,590 760,650 750,700" stroke="#5e1410" stroke-width="7" fill="none" opacity=".7"/>')
+far.append('<path d="M0,1000 L0,690 L1600,690 L1600,1000Z" fill="#b8381a"/><path d="M0,1000 L0,790 Q400,760 800,790 T1600,780 L1600,1000Z" fill="#96280f"/>')
+for i in range(26):
+    x = R.uniform(0, 1600); y = R.uniform(710, 960); far.append(f'<path d="M{x:.0f},{y:.0f} l-8,-16 l8,10 l2,-18 l4,18 l8,-12 l-6,18Z" fill="#e0a040" opacity=".8"/>')
+mid = [d, '<g filter="url(#b3)">']
+for x, s in [(150, 1.0), (1240, 1.25)]:
+    t = f'<path d="M{x},1000 C{x-10*s},{820} {x+30*s},{700} {x+10*s},{1000-460*s:.0f} M{x+14*s},{1000-300*s:.0f} C{x+70*s},{1000-380*s:.0f} {x+120*s},{1000-400*s:.0f} {x+150*s},{1000-470*s:.0f} M{x+8*s},{1000-360*s:.0f} C{x-60*s},{1000-420*s:.0f} {x-110*s},{1000-430*s:.0f} {x-140*s},{1000-500*s:.0f}" stroke="#3a120c" stroke-width="{22*s:.0f}" fill="none" stroke-linecap="round"/>'
+    for cx, cy, r in [(10, 500, 110), (150, 500, 90), (-140, 530, 95), (60, 590, 80), (-50, 440, 70)]:
+        t += f'<ellipse cx="{x+cx*s:.0f}" cy="{1000-cy*s:.0f}" rx="{r*s:.0f}" ry="{r*s*.5:.0f}" fill="#4a1a10"/>'
+    mid.append(t)
+# kangaroo
+mid.append('<g transform="translate(700,1000) scale(1.5)" fill="#3a120c"><path d="M0,0 L-20,-14 C-70,-20 -110,-10 -140,10 C-110,-30 -70,-48 -30,-50 C-34,-90 -10,-130 30,-150 L34,-186 L44,-160 L58,-190 L60,-150 C76,-140 84,-128 86,-116 L62,-112 C56,-90 60,-70 50,-50 C70,-40 70,-10 40,0 L70,0 L70,8 L10,8Z"/><path d="M40,-100 L70,-80 L66,-72 L36,-86Z"/></g>')
+for x in [460, 1010, 1480]: mid.append(f'<path d="M{x},1000 C{x-10},900 {x+6},860 {x+24},850 C{x+50},860 {x+56},920 {x+60},1000Z" fill="#4a1a10"/>')
+mid.append('</g><rect x="-100" y="720" width="1800" height="240" fill="#ffd060" opacity=".14" filter="url(#soft)"/>')
+themed('australia', {'#8a5a2c': '#ffc070', '#3a2414': '#d8642a', '#120b08': '#7a2410', '#e8b070': '#fff0c0',
+                     '#ffd08a': '#fff6c0', '#e8823a': '#ffc030', '#8a3414': '#c06a10', '#fff3d0': '#ffffff',
+                     '#35502a': '#8a8a3a', '#4c8a3c': '#c8c060', '#1c110b': '#6a2a14', '#6a4020': '#e8a040',
+                     '#170e09': '#5a1a0e', '#5a3418': '#e07a30'}, ''.join(far), ''.join(mid))
+
+# new zealand: snow peaks over a teal lake, green hills, silver ferns
+R = random.Random(22)
+d = defs('#2f8fd0', '#8fd8f0', '#e8fbff')
+far = [d, SKY]
+for i in range(6):
+    x = R.uniform(0, 1600); y = R.uniform(60, 300); w = R.uniform(140, 280)
+    far.append(f'<ellipse cx="{x:.0f}" cy="{y:.0f}" rx="{w:.0f}" ry="{w*.16:.0f}" fill="#ffffff" opacity=".8" filter="url(#b3)"/>')
+peaks = [(-60, 640), (120, 300), (260, 470), (420, 180), (600, 430), (760, 250), (900, 400), (1080, 140), (1260, 420), (1420, 280), (1660, 640)]
+far.append('<path d="M' + ' L'.join(f'{x},{y}' for x, y in peaks) + ' L1660,1000 L-60,1000Z" fill="#5a7a9a"/>')
+for x, y in peaks[1:-1:2]:
+    far.append(f'<path d="M{x},{y} L{x-70},{y+120} L{x-30},{y+96} L{x-6},{y+140} L{x+26},{y+100} L{x+60},{y+130} L{x+84},{y+110}Z" fill="#ffffff"/>')
+far.append('<path d="M0,1000 L0,640 Q260,560 520,640 T1040,620 T1600,650 L1600,1000Z" fill="#2f9a5a"/><path d="M0,760 H1600 V1000 H0Z" fill="#1fb0b8"/><path d="M0,760 H1600" stroke="#bff6f0" stroke-width="5" opacity=".8"/>')
+for i in range(14):
+    x = R.uniform(0, 1500); y = R.uniform(790, 960); far.append(f'<path d="M{x:.0f},{y:.0f} h{R.uniform(60,160):.0f}" stroke="#bff6f0" stroke-width="4" opacity=".5"/>')
+mid = [d, '<g filter="url(#b3)">']
+def fern(x, y, s, a, c):
+    o = f'<g transform="translate({x},{y}) rotate({a}) scale({s})"><path d="M0,0 C20,-140 60,-240 150,-300 C190,-326 220,-300 200,-270 C190,-256 170,-262 176,-278" stroke="{c}" stroke-width="12" fill="none" stroke-linecap="round"/>'
+    for k in range(9):
+        t = k / 9; px = 20 * t + 130 * t * t; py = -300 * t ** .8; l = 70 * (1 - t) + 14
+        o += f'<path d="M{px:.0f},{py:.0f} l{-l:.0f},{-l*.3:.0f} M{px:.0f},{py:.0f} l{l*.8:.0f},{l*.5:.0f}" stroke="{c}" stroke-width="10" stroke-linecap="round"/>'
+    return o + '</g>'
+for x, s, a, c in [(60, 1.5, -10, '#0e4a30'), (200, 1.1, 20, '#146a40'), (760, 1.3, -30, '#0e4a30'), (860, 1.6, 6, '#146a40'), (1380, 1.4, -16, '#0e4a30'), (1500, 1.0, 24, '#146a40')]:
+    mid.append(fern(x, 1010, s, a, c))
+mid.append('</g><rect x="-100" y="720" width="1800" height="220" fill="#ffffff" opacity=".2" filter="url(#soft)"/>')
+themed('newzealand', {'#8a5a2c': '#e8f8f0', '#3a2414': '#8ac8b0', '#120b08': '#2a6a5a', '#e8b070': '#ffffff',
+                      '#ffd08a': '#f0fff0', '#e8823a': '#7ae0a0', '#8a3414': '#1a8a5a', '#fff3d0': '#ffffff',
+                      '#35502a': '#0e6a3a', '#4c8a3c': '#3ad070', '#1c110b': '#12402e', '#6a4020': '#7af0b0',
+                      '#170e09': '#eafff6', '#5a3418': '#5ac8a0'}, ''.join(far), ''.join(mid))
+
+# france: violet dusk over the rooftops of Paris, the tower, lavender rows, street lamps
+R = random.Random(23)
+d = defs('#2a1458', '#b0408a', '#ffb070')
+far = [d, SKY, '<circle cx="420" cy="640" r="260" fill="#ffd0a0" opacity=".5" filter="url(#soft)"/>']
+for i in range(50): far.append(f'<circle cx="{R.uniform(0,1600):.0f}" cy="{R.uniform(0,380):.0f}" r="{R.uniform(.8,2.4):.1f}" fill="#fff0ff" opacity="{R.uniform(.3,.9):.2f}"/>')
+tw = '<g transform="translate(1080,0)" fill="#3a1a5e"><path d="M-8,150 L8,150 L22,420 L60,640 L170,900 L110,900 C70,800 -70,800 -110,900 L-170,900 L-60,640 L-22,420Z"/><rect x="-34" y="410" width="68" height="18"/><rect x="-76" y="630" width="152" height="22"/><path d="M-3,150 V70 h6 V150Z"/></g>'
+far.append(tw)
+roofs = '<path d="M0,1000 V760'
+x = 0
+while x < 1600:
+    w = R.choice([120, 160, 200]); h = R.choice([660, 700, 730, 760]); roofs += f' L{x},{h+40} L{x+18},{h} L{x+w-18},{h} L{x+w},{h+40}'
+    x += w
+roofs += ' L1600,1000Z" fill="#4a2068"/>'
+far.append(roofs)
+x = 30
+while x < 1600:
+    far.append(f'<rect x="{x}" y="{R.choice([640,680,700])}" width="22" height="70" fill="#4a2068"/><rect x="{x+50}" y="800" width="26" height="40" fill="#ffd070" opacity=".9"/><rect x="{x+110}" y="860" width="26" height="40" fill="#ffd070" opacity="{R.choice([.2,.9])}"/>')
+    x += R.choice([150, 190, 230])
+mid = [d, '<g filter="url(#b3)">']
+for k in range(9):
+    y = 1000 - k * 14; mid.append(f'<path d="M-50,{y} Q800,{y-150-k*12} 1650,{y}" stroke="{["#7a3ab0","#9a5ad0"][k%2]}" stroke-width="16" fill="none" opacity=".9"/>')
+for x in [240, 1330]:
+    mid.append(f'<path d="M{x},1000 V600" stroke="#1e0e34" stroke-width="14"/><path d="M{x-40},600 h80 l-14,-70 h-52Z" fill="#1e0e34"/><circle cx="{x}" cy="566" r="90" fill="#ffd070" opacity=".35" filter="url(#soft)"/><circle cx="{x}" cy="566" r="20" fill="#fff0b0"/>')
+for x in [620, 940]:
+    mid.append(f'<path d="M{x},1000 C{x-40},800 {x-20},640 {x},540 C{x+20},640 {x+40},800 {x},1000Z" fill="#1e0e34"/>')
+mid.append('</g><rect x="-100" y="760" width="1800" height="220" fill="#c070ff" opacity=".14" filter="url(#soft)"/>')
+themed('france', {'#8a5a2c': '#f0d0ff', '#3a2414': '#9a5ad0', '#120b08': '#3a1a5e', '#e8b070': '#fff0c0',
+                  '#ffd08a': '#fff0c0', '#e8823a': '#ffc040', '#8a3414': '#c07a10', '#fff3d0': '#ffffff',
+                  '#35502a': '#5a3a8a', '#4c8a3c': '#b080e8', '#1c110b': '#2a1444', '#6a4020': '#ffd070',
+                  '#170e09': '#241038', '#5a3418': '#ffb070'}, ''.join(far), ''.join(mid))
+
+# uk: London in the rain, slate and grey with red, the clock tower and the bridge
+R = random.Random(24)
+d = defs('#3a4654', '#6a7884', '#a8b0b4')
+far = [d, SKY]
+for i in range(9):
+    x = R.uniform(0, 1600); y = R.uniform(40, 360); w = R.uniform(200, 380)
+    far.append(f'<ellipse cx="{x:.0f}" cy="{y:.0f}" rx="{w:.0f}" ry="{w*.2:.0f}" fill="#2a343e" opacity=".7" filter="url(#b6)"/>')
+ben = '<g transform="translate(360,0)" fill="#27303a"><path d="M-46,1000 V330 h92 V1000Z"/><path d="M-56,330 h112 V230 H-56Z"/><path d="M-56,230 L0,60 L56,230Z"/><rect x="-4" y="20" width="8" height="60"/><circle cx="0" cy="282" r="38" fill="#fff2c0"/><path d="M0,282 V256 M0,282 L16,292" stroke="#27303a" stroke-width="6"/></g>'
+far.append(ben)
+bridge = '<g fill="#27303a"><path d="M900,1000 V470 l40,-90 l40,90 V1000Z"/><path d="M1300,1000 V470 l40,-90 l40,90 V1000Z"/><rect x="980" y="560" width="320" height="26"/><rect x="980" y="740" width="320" height="34"/><path d="M700,760 Q820,560 900,520 M1380,520 Q1470,560 1600,760" stroke="#27303a" stroke-width="12" fill="none"/><rect x="600" y="752" width="1000" height="22"/></g>'
+far.append(bridge)
+sk = '<path d="M0,1000 V800'
+x = 0
+while x < 1600:
+    w = R.choice([90, 130, 170]); h = R.choice([760, 790, 820]); sk += f' L{x},{h} L{x+w},{h}'; x += w
+far.append(sk + ' L1600,1000Z" fill="#323c46"/>')
+for i in range(90):
+    x = R.uniform(0, 1600); y = R.uniform(0, 950); far.append(f'<path d="M{x:.0f},{y:.0f} l-10,44" stroke="#d8e4ee" stroke-width="2" opacity=".35"/>')
+mid = [d, '<g filter="url(#b3)">']
+mid.append('<g transform="translate(250,1000)"><rect x="-56" y="-300" width="112" height="300" fill="#c8101e"/><path d="M-62,-300 Q0,-350 62,-300Z" fill="#c8101e"/><rect x="-40" y="-262" width="80" height="200" fill="#1a2028"/><path d="M-40,-212 h80 M-40,-162 h80 M-40,-112 h80 M-14,-262 v200 M14,-262 v200" stroke="#c8101e" stroke-width="6"/><rect x="-36" y="-292" width="72" height="20" fill="#fff2c0"/></g>')
+for x in [760, 1420]:
+    mid.append(f'<path d="M{x},1000 V560" stroke="#12161c" stroke-width="14"/><path d="M{x-30},560 h60 l-10,-60 h-40Z" fill="#12161c"/><circle cx="{x}" cy="530" r="80" fill="#fff2c0" opacity=".35" filter="url(#soft)"/><circle cx="{x}" cy="530" r="16" fill="#fff8d8"/>')
+mid.append('<path d="M980,1000 V760 h60 v-60 h30 v60 h120 v-90 h30 v90 h60 V1000Z" fill="#5a2a22"/><path d="M980,800 h300 M980,850 h300 M980,900 h300 M980,950 h300" stroke="#3a1a16" stroke-width="5"/>')
+mid.append('</g><rect x="-100" y="780" width="1800" height="200" fill="#d8e4ee" opacity=".12" filter="url(#soft)"/>')
+themed('uk', {'#8a5a2c': '#d8dee4', '#3a2414': '#7a8490', '#120b08': '#2a323a', '#e8b070': '#ffffff',
+              '#ffd08a': '#fff0c0', '#e8823a': '#ff5a4a', '#8a3414': '#a8101e', '#fff3d0': '#ffffff',
+              '#35502a': '#2a4a34', '#4c8a3c': '#4a8a5a', '#1c110b': '#1a2028', '#6a4020': '#c8101e',
+              '#170e09': '#161c22', '#5a3418': '#c8101e'}, ''.join(far), ''.join(mid))
+
+# the boss: a tomato in a very good suit, pleased with how things turned out. Arms are separate so he can clap.
+r = 120; Kc = T.K; St = T.S
+suit, lapel, shirt, tie = '#1c2a4a', '#111a30', '#f6f4ee', '#e8b030'
+body = ''
+for sx in (-1, 1):
+    body += f'<path d="M{sx*70},500 L{sx*64},720 L{sx*26},720 L{sx*12},500Z" fill="{suit}" {St()}/><path d="M{sx*14},716 h{sx*96} q{sx*10},22 {sx*-16},26 H{sx*14}Z" fill="#0b0706" {St(6)}/><path d="M{sx*40},724 h{sx*40}" stroke="#ffffff" stroke-width="5" opacity=".5"/>'
+body += f'<path d="M-150,250 C-170,330 -150,470 -120,520 L120,520 C150,470 170,330 150,250 C100,200 -100,200 -150,250Z" fill="{suit}" {St()}/>'
+for x in range(-130, 140, 26): body += f'<path d="M{x},230 V516" stroke="#3a4c7a" stroke-width="2.5" opacity=".7"/>'
+body += f'<path d="M-52,214 L0,330 L52,214Z" fill="{shirt}" {St(6)}/><path d="M-14,232 L14,232 L22,262 L0,400 L-22,262Z" fill="{tie}" {St(6)}/><path d="M-14,232 L14,232 L10,254 L-10,254Z" fill="#c8901a" {St(5)}/>'
+body += f'<path d="M-52,214 L-96,236 L-20,400 L0,330Z M52,214 L96,236 L20,400 L0,330Z" fill="{lapel}" {St(6)}/>'
+body += f'<path d="M64,300 l44,-8 l-6,26 l-40,6Z" fill="{shirt}" {St(5)}/><circle cx="0" cy="430" r="8" fill="{tie}" {St(4)}/><circle cx="0" cy="474" r="8" fill="{tie}" {St(4)}/>'
+head = f'<g transform="translate(0,112)"><path d="M-6,{-r*.92} C-8,{-r*1.3} 6,{-r*1.5} {r*.34},{-r*1.44} C{r*.5},{-r*1.38} {r*.44},{-r*1.2} {r*.3},{-r*1.24} C{r*.14},{-r*1.26} {r*.12},{-r*1.1} {r*.14},{-r*.92}Z" fill="#4c8a3c" {St()}/>'
+head += f'<path d="M{-r*1.06},0 C{-r*1.08},{-r*.6} {-r*.56},{-r} 0,{-r} C{r*.56},{-r} {r*1.08},{-r*.6} {r*1.06},0 C{r*1.08},{r*.6} {r*.56},{r*.98} 0,{r*.98} C{-r*.56},{r*.98} {-r*1.08},{r*.6} {-r*1.06},0Z" fill="#e8402f" {St()}/>'
+head += f'<path d="M{r*1.06},0 C{r*1.08},{r*.6} {r*.56},{r*.98} 0,{r*.98} C{-r*.2},{r*.98} {-r*.4},{r*.94} {-r*.56},{r*.84} C0,{r*.84} {r*.7},{r*.5} {r*.76},{-r*.54} C{r*.96},{-r*.38} {r*1.06},{-r*.2} {r*1.06},0Z" fill="#b8242a"/>'
+head += f'<path d="M{-r*.2},{-r*.98} l{-r*.3},{r*.06} l{r*.2},{r*.08} l{-r*.14},{r*.16} l{r*.3},{-r*.1} l{r*.1},{r*.2} l{r*.1},{-r*.2} l{r*.3},{r*.06} l{-r*.18},{-r*.16} l{r*.2},{-r*.1}Z" fill="#4c8a3c" {St(6)}/>'
+head += f'<path d="M{-r*.62},{-r*.2} Q{-r*.42},{-r*.46} {-r*.22},{-r*.2} M{r*.22},{-r*.2} Q{r*.42},{-r*.46} {r*.62},{-r*.2}" stroke="{Kc}" stroke-width="13" fill="none" stroke-linecap="round"/>'
+head += f'<path d="M{-r*.56},{r*.14} C{-r*.4},{r*.78} {r*.4},{r*.78} {r*.56},{r*.14}Z" fill="#2a0c10" {St()}/><path d="M{-r*.5},{r*.17} H{r*.5} L{r*.44},{r*.32} H{-r*.44}Z" fill="#fff6e0" {St(5)}/><path d="M{-r*.2},{r*.56} Q0,{r*.42} {r*.2},{r*.56} Q0,{r*.68} {-r*.2},{r*.56}Z" fill="#ff8a8a"/>'
+head += f'<ellipse cx="{-r*.74}" cy="{r*.1}" rx="{r*.15}" ry="{r*.09}" fill="#ffb0a0" opacity=".8"/><ellipse cx="{r*.74}" cy="{r*.1}" rx="{r*.15}" ry="{r*.09}" fill="#ffb0a0" opacity=".8"/><path d="M{-r*.6},{-r*.62} Q{-r*.3},{-r*.8} {-r*.1},{-r*.66}" stroke="#ffffff" stroke-width="12" fill="none" opacity=".35" stroke-linecap="round"/></g>'
+render(part(body + head, 400, 440, 200, 45), f'{OUT}/tomatoes/boss.png', 400, 440)
+armsvg = f'<path d="M0,0 L170,0" stroke="{Kc}" stroke-width="74" stroke-linecap="round"/><path d="M0,0 L170,0" stroke="{suit}" stroke-width="58" stroke-linecap="round"/><path d="M176,-32 V32" stroke="{shirt}" stroke-width="22"/><path d="M176,-32 V32" stroke="{Kc}" stroke-width="6" opacity=".0"/><path d="M196,-34 C250,-44 286,-20 286,6 C286,34 250,44 196,34Z" fill="#ffffff" {St()}/><path d="M214,-34 C214,-62 250,-58 246,-30" fill="#ffffff" {St()}/>'
+render(part(armsvg, 200, 80, 30, 40), f'{OUT}/tomatoes/boss_arm.png', 200, 80)
+# a gold ring with a stone, held out at the proposal
+render(part(f'<circle cx="0" cy="20" r="34" fill="none" stroke="{Kc}" stroke-width="26"/><circle cx="0" cy="20" r="34" fill="none" stroke="#ffd040" stroke-width="13"/><path d="M-22,-22 L0,-56 L22,-22 L0,-4Z" fill="#bff6ff" {St(6)}/>', 80, 80, 40, 40), f'{OUT}/fx/gold_ring.png', 80, 80)
 print('ok')

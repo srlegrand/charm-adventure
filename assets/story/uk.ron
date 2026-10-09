@@ -1,0 +1,13 @@
+// Story for the United Kingdom. Edit it in the game with F1, or here by hand.
+(
+    scenes: [
+        (
+            id: "proposal",
+            trigger: Enter((8360.0, 320.0, 160.0, 400.0)),
+            lines: [
+                (who: "simon", text: "", secs: 2.0, act: "simon_kneels"),
+                (who: "boss", text: "", secs: 2.0, act: "boss_claps"),
+            ],
+        ),
+    ],
+)

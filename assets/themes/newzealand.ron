@@ -1,0 +1,15 @@
+// Snow peaks over a teal lake, green hills, ferns.
+(
+    clear: (0.55, 0.82, 0.94),
+    rock: (0.06, 0.24, 0.2),
+    brick: (0.08, 0.31, 0.25),
+    trim: (0.5, 0.95, 0.7),
+    side: (0.03, 0.15, 0.12),
+    blade: (0.25, 0.8, 0.45),
+    lantern: (1.1, 1.25, 1.2),
+    light: (0.8, 1.0, 0.9, 0.1),
+    scenery: (1.0, 1.0, 1.0, 0.9),
+    far: "sprites/bg/newzealand_far.png",
+    mid: "sprites/bg/newzealand_mid.png",
+    props: "sprites/props/newzealand",
+)

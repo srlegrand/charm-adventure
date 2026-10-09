@@ -101,6 +101,9 @@ struct Line {
     text: String,
     #[serde(default, skip_serializing_if = "is_zero")]
     secs: f32,
+    /// Something that happens when this line comes up: "simon_kneels", "boss_claps". It lasts until the level is left.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    act: String,
 }
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
@@ -120,6 +123,10 @@ struct Story {
     ask: Option<(Vec<Choice>, usize)>,
     current: Option<(Line, f32)>,
     last_tick: u32,
+    /// Staging switched on by lines in this level.
+    acts: Vec<String>,
+    /// Set by the editor: play this scene as soon as the level is up.
+    start_at: Option<String>,
 }
 
 /// One of the two game cameras. In split screen each follows its own player.
@@ -137,6 +144,12 @@ struct Views {
 
 #[derive(Component)]
 struct Geo;
+/// The ring Simon holds out.
+#[derive(Component)]
+struct RingFx;
+/// The boss: 0 the body, 1 and 2 the shoulders his arms hang from.
+#[derive(Component)]
+struct BossPart(usize);
 #[derive(Component)]
 struct EnemyVis(usize);
 #[derive(Component)]
@@ -377,7 +390,7 @@ fn main() {
         .init_resource::<editor::Editor>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
         .add_systems(Startup, (setup, editor::setup))
-        .add_systems(Update, (read_input, hot_reload, editor::edit, build_geo, animate, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
+        .add_systems(Update, (read_input, hot_reload, editor::edit, build_geo, animate, boss, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -487,6 +500,20 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     let root = commands.spawn((BubblePart, Transform::from_xyz(0.0, 0.0, 7.0), Visibility::Hidden)).id();
     commands.entity(root).add_children(&[bg, tail, text]);
     commands.insert_resource(StoryUi { root, bg, tail, text });
+    let mut s = Sprite::from_image(assets.load("sprites/fx/gold_ring.png"));
+    s.custom_size = Some(Vec2::splat(16.0));
+    s.color = Color::srgb(1.6, 1.4, 0.8);
+    commands.spawn((RingFx, s, Transform::from_xyz(0.0, 0.0, 2.5), Visibility::Hidden));
+    let mut s = Sprite::from_image(assets.load("sprites/tomatoes/boss.png"));
+    s.custom_size = Some(Vec2::new(400.0, 440.0) * BOSS_SCALE);
+    commands.spawn((BossPart(0), s, Transform::from_xyz(0.0, 0.0, 1.9), Visibility::Hidden));
+    for i in 1..3 {
+        let mut s = Sprite::from_image(assets.load("sprites/tomatoes/boss_arm.png"));
+        s.custom_size = Some(Vec2::new(200.0, 80.0) * BOSS_SCALE);
+        let arm = commands.spawn((s, Transform::from_xyz(70.0 * BOSS_SCALE, 0.0, 0.0))).id();
+        let shoulder = commands.spawn((BossPart(i), Transform::from_xyz(0.0, 0.0, 1.95), Visibility::Hidden)).id();
+        commands.entity(shoulder).add_child(arm);
+    }
     art.flowers = (0..6).map(|i| assets.load(format!("sprites/fx/flower{i}.png"))).collect();
     for (kind, e) in &rigs.enemies {
         let size = Vec2::new(e.size.0, e.size.1) * e.units_per_px;
@@ -820,8 +847,10 @@ struct Pose {
 fn animate(
     game: Res<Game>,
     skin: Res<Skin>,
+    story: Res<Story>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
+    mut ring: Query<(&mut Transform, &mut Visibility), (With<RingFx>, Without<Rig>, Without<PartPivot>)>,
     mut rigs: Query<(&Rig, &mut Pose, &mut Transform, &mut Visibility), Without<PartPivot>>,
     mut parts: Query<&mut Transform, With<PartPivot>>,
 ) {
@@ -833,10 +862,26 @@ fn animate(
     for (rig, mut pose, mut tf, mut vis) in &mut rigs {
         // Player 1 is the chosen character, player 2 the other one.
         let index = (rig.who + 2 - skin.0) % 2;
-        let Some(p) = w.players.get(index) else {
-            *vis = Visibility::Hidden;
-            continue;
+        // Whoever nobody is playing can still stand in a level as the "partner".
+        let ghost;
+        let other = w.players.get(1 - index.min(1)).map(|q| q.x);
+        let p = match w.players.get(index) {
+            Some(p) => p,
+            None => match w.level.actors.iter().find(|a| a.kind == "partner") {
+                Some(a) => {
+                    let mut g = sim::Player::new(a.x, a.y, t);
+                    g.on_ground = true;
+                    g.facing = if other.unwrap_or(a.x - 1.0) < a.x { -1.0 } else { 1.0 };
+                    ghost = g;
+                    &ghost
+                }
+                None => {
+                    *vis = Visibility::Hidden;
+                    continue;
+                }
+            },
         };
+        let partner_x = other.or(w.level.actors.iter().find(|a| a.kind == "partner").map(|a| a.x));
         let blink = p.invuln > 0.0 && (w.tick / 4) % 2 == 0;
         *vis = if blink { Visibility::Hidden } else { Visibility::Inherited };
         let (x, y) = (p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a);
@@ -883,6 +928,25 @@ fn animate(
             g = [1.5, 1.7, -0.7, 0.5, -1.2, 0.0, 0.92, 0.92];
             snap = 90.0;
         }
+        // The proposal: Simon goes down on one knee, facing Charm, and holds out the ring.
+        let kneel = rig.who == 0 && story.acts.iter().any(|a| a == "simon_kneels") && p.on_ground && !running && !attacking && !p.down;
+        let mut face = p.facing;
+        if kneel {
+            g = [1.45, -0.95, -0.12, 0.22, 1.0, 0.0, 1.0, 1.0];
+            bob = -13.0;
+            snap = 8.0;
+            if let Some(px) = partner_x {
+                face = if px < x { -1.0 } else { 1.0 };
+            }
+            if let Ok((mut rt, mut rv)) = ring.single_mut() {
+                *rv = Visibility::Visible;
+                rt.translation = Vec3::new(x + face * 30.0, y + 6.0 + (now * 3.0).sin() * 2.0, 2.5);
+            }
+        } else if rig.who == 0 {
+            if let Ok((_, mut rv)) = ring.single_mut() {
+                *rv = Visibility::Hidden;
+            }
+        }
         if p.down {
             // Out of lives: flat on the ground until the partner passes one over.
             g = [0.2, -0.1, 0.1, 0.3, 0.6, 1.5, 1.0, 1.0];
@@ -920,11 +984,11 @@ fn animate(
         // Lean about the body centre, not the feet, so the figure stays over its collision box.
         // The flip spins the whole figure forward once, easing out.
         let turn = if pose.flip > 0.0 { let u = 1.0 - pose.flip / FLIP_TIME; -(1.0 - (1.0 - u).powi(2)) * std::f32::consts::TAU } else { 0.0 };
-        let lean = (v[5] + turn) * p.facing;
+        let lean = (v[5] + turn) * face;
         let half = t.height / 2.0;
         tf.translation = Vec3::new(x + lean.sin() * half, y - lean.cos() * half + bob, 2.0);
         tf.rotation = Quat::from_rotation_z(lean);
-        tf.scale = Vec3::new(p.facing * v[6] * (1.0 + 0.22 * sq), v[7] * (1.0 - 0.28 * sq), 1.0);
+        tf.scale = Vec3::new(face * v[6] * (1.0 + 0.22 * sq), v[7] * (1.0 - 0.28 * sq), 1.0);
         for (e, angle) in [(rig.leg_b, v[0] - v[5] * 0.5), (rig.leg_f, v[1] - v[5] * 0.5), (rig.body, v[2]), (rig.head, v[3]), (rig.weapon, v[4])] {
             if let Ok(mut part) = parts.get_mut(e) {
                 part.rotation = Quat::from_rotation_z(angle);
@@ -992,14 +1056,13 @@ fn camera(
     mut layers: Query<(&BgLayer, &mut Transform, &mut Visibility), Without<ViewCam>>,
     mut juice: ResMut<Juice>,
     mut views: ResMut<Views>,
-    ed: Res<editor::Editor>,
     mut base: Local<[Option<Vec2>; 2]>,
 ) {
     let Ok(win) = window.single() else { return };
     let w = &game.world;
     let a = fixed.overstep_fraction();
     let b: Rect = w.level.bounds;
-    let split = w.players.len() == 2 && views.want_split && !ed.on;
+    let split = w.players.len() == 2 && views.want_split;
     views.split = split;
     let (pw, ph) = (win.physical_width().max(2), win.physical_height().max(2));
     juice.shake = (juice.shake - time.delta_secs() * 40.0).max(0.0);
@@ -1016,7 +1079,7 @@ fn camera(
         }
         cam.viewport = if split { Some(Viewport { physical_position: UVec2::new(i as u32 * pw / 2, 0), physical_size: UVec2::new(pw / 2, ph), ..default() }) } else { None };
         let aspect = if split { (pw / 2) as f32 / ph as f32 } else { pw as f32 / ph as f32 };
-        let half = Vec2::new(VIEW_H / 2.0 * aspect, VIEW_H / 2.0) * if ed.on { ed.zoom } else { 1.0 };
+        let half = Vec2::new(VIEW_H / 2.0 * aspect, VIEW_H / 2.0);
         // What this camera follows: its own player in split screen (their partner if they are down), otherwise everyone standing.
         let (focus, facing) = if split {
             let p = w.players.get(i).filter(|p| !p.down).or(up.first().copied()).or(w.players.get(i));
@@ -1034,8 +1097,6 @@ fn camera(
         );
         let k = 1.0 - (-8.0 * time.delta_secs()).exp();
         let pos = base[i].unwrap_or(target).lerp(target, k);
-        // The editor moves the view itself.
-        let pos = if ed.on { ed.cam } else { pos };
         base[i] = Some(pos);
         // Shake starts hard and dies away fast.
         let jolt = Vec2::new(juice.rand() - 0.5, juice.rand() - 0.5) * 2.0 * juice.shake;
@@ -1276,6 +1337,40 @@ fn hotkeys(
                 WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
                 _ => WindowMode::Windowed,
             };
+        }
+    }
+}
+
+const BOSS_SCALE: f32 = 0.4;
+
+/// The boss stands where the level puts him. When the story says so, he claps.
+fn boss(game: Res<Game>, story: Res<Story>, time: Res<Time>, mut parts: Query<(&BossPart, &mut Transform, &mut Visibility)>) {
+    let Some(a) = game.world.level.actors.iter().find(|a| a.kind == "boss") else {
+        for (_, _, mut vis) in &mut parts {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    };
+    let clapping = story.acts.iter().any(|x| x == "boss_claps");
+    let beat = (time.elapsed_secs() * 9.0).sin();
+    let hop = if clapping { beat.abs() * 5.0 } else { 0.0 };
+    // The sprite's feet are 24 pixels above its bottom edge.
+    let centre = Vec2::new(a.x, a.y + (220.0 - 24.0) * BOSS_SCALE + hop);
+    for (part, mut tf, mut vis) in &mut parts {
+        *vis = Visibility::Visible;
+        match part.0 {
+            0 => {
+                tf.translation = centre.extend(1.9);
+                tf.rotation = Quat::from_rotation_z(if clapping { beat * 0.03 } else { 0.0 });
+            }
+            i => {
+                let side = if i == 1 { -1.0 } else { 1.0 };
+                // Hands meet in front of the collar, then spring apart.
+                let angle = if clapping { 0.58 + (beat * 0.5 + 0.5) * 0.3 } else { -1.35 };
+                tf.translation = (centre + Vec2::new(side * 48.0, 10.0)).extend(1.95);
+                tf.rotation = Quat::from_rotation_z(if side < 0.0 { angle } else { std::f32::consts::PI - angle });
+                tf.scale = Vec3::new(1.0, -side, 1.0);
+            }
         }
     }
 }
@@ -1703,6 +1798,7 @@ fn story(
         story.queue.clear();
         story.current = None;
         story.ask = None;
+        story.acts.clear();
     }
     if story.poll <= 0.0 {
         story.poll = 0.5;
@@ -1731,8 +1827,20 @@ fn story(
         story.queue.clear();
         story.current = None;
         story.ask = None;
+        story.acts.clear();
     }
     story.last_tick = w.tick;
+    if let Some(id) = story.start_at.take() {
+        let scenes = story.file.scenes.clone();
+        for s in &scenes {
+            if matches!(s.trigger, Trigger::LevelStart) && !story.played.contains(&s.id) {
+                story.played.push(s.id.clone());
+            }
+        }
+        if let Some(s) = scenes.iter().find(|s| s.id == id) {
+            play_scene(&mut story, s);
+        }
+    }
     if !chooser.0 {
         let scenes = story.file.scenes.clone();
         for scene in scenes {
@@ -1750,7 +1858,12 @@ fn story(
         }
         if story.current.is_none() && story.ask.is_none() {
             match story.queue.pop_front() {
-                Some(Beat::Say(line)) => story.current = Some((line, 0.0)),
+                Some(Beat::Say(line)) => {
+                    if !line.act.is_empty() && !story.acts.contains(&line.act) {
+                        story.acts.push(line.act.clone());
+                    }
+                    story.current = Some((line, 0.0));
+                }
                 Some(Beat::Ask(choices)) => story.ask = Some((choices, 0)),
                 None => {}
             }
@@ -1769,7 +1882,8 @@ fn story(
     if done {
         story.current = None;
     }
-    let Some((line, age)) = show.filter(|_| !done) else {
+    // A line with no words is a silent beat: it only holds the moment.
+    let Some((line, age)) = show.filter(|(l, _)| !done && !l.text.is_empty()) else {
         if let Ok((_, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
             *vis = Visibility::Hidden;
         }
