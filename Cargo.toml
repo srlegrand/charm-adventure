@@ -2,6 +2,7 @@
 name = "charm_adventure"
 version = "0.1.0"
 edition = "2021"
+default-run = "charm_adventure"
 
 [dependencies]
 bevy = { version = "0.19.1", default-features = false, features = [

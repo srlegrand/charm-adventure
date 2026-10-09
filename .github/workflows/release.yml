@@ -44,7 +44,7 @@ jobs:
         run: |
           cargo build --release
           mkdir -p dist/charm-adventure
-          cp target/release/charm_adventure dist/charm-adventure/
+          cp target/release/charm_adventure target/release/charm_story dist/charm-adventure/
           cp -r assets dist/charm-adventure/
           tar -C dist -czf charm-adventure-linux.tar.gz charm-adventure
           python3 packaging/wheel.py dist/charm-adventure manylinux_2_35_x86_64 0.1.${{ github.run_number }} wheels
@@ -56,6 +56,7 @@ jobs:
           cargo build --release
           New-Item -ItemType Directory -Force dist/charm-adventure | Out-Null
           Copy-Item target/release/charm_adventure.exe dist/charm-adventure/
+          Copy-Item target/release/charm_story.exe dist/charm-adventure/
           Copy-Item -Recurse assets dist/charm-adventure/
           Compress-Archive -Path dist/charm-adventure -DestinationPath charm-adventure-windows.zip
           python packaging/wheel.py dist/charm-adventure win_amd64 "0.1.${{ github.run_number }}" wheels
@@ -66,9 +67,11 @@ jobs:
           cargo build --release --target x86_64-apple-darwin
           cargo build --release --target aarch64-apple-darwin
           mkdir -p dist/charm-adventure
-          lipo -create -output dist/charm-adventure/charm_adventure \
-            target/x86_64-apple-darwin/release/charm_adventure \
-            target/aarch64-apple-darwin/release/charm_adventure
+          for exe in charm_adventure charm_story; do
+            lipo -create -output dist/charm-adventure/$exe \
+              target/x86_64-apple-darwin/release/$exe \
+              target/aarch64-apple-darwin/release/$exe
+          done
           cp -r assets dist/charm-adventure/
           python3 packaging/wheel.py dist/charm-adventure macosx_11_0_universal2 0.1.${{ github.run_number }} wheels
           cd dist && zip -qr ../charm-adventure-mac.zip charm-adventure

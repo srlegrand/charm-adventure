@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Charm Adventure in Tomato Land - movement slice.
-mod editor;
 mod sim;
+#[allow(dead_code)]
+mod story_data;
 
 use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::prelude::*;
@@ -9,7 +10,8 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ClearColorConfig, Hdr, Viewport};
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use sim::{AttackDir, Rect, Tuning, World as SimWorld};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use story_data::*;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -51,62 +53,10 @@ struct StoryUi {
 }
 const BUBBLE_TEXT_SCALE: f32 = 0.5;
 
-/// Speech, loaded from assets/story/<level>.ron. This is the data the story editor will write.
-#[derive(Deserialize, Serialize, Default, Clone)]
-struct StoryFile {
-    scenes: Vec<Scene>,
-}
-#[derive(Deserialize, Serialize, Clone)]
-struct Scene {
-    id: String,
-    trigger: Trigger,
-    /// Flags that must all be set for this scene to play.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    requires: Vec<String>,
-    /// Flags set when it plays.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    set: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    lines: Vec<Line>,
-    /// Offered after the lines; the game waits for an answer.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    choices: Vec<Choice>,
-}
-/// One answer to a choice: it can set flags, jump to another scene, or leave for another level.
-#[derive(Deserialize, Serialize, Clone)]
-struct Choice {
-    text: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    set: Vec<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    goto: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    level: String,
-}
 #[derive(Clone)]
 enum Beat {
     Say(Line),
     Ask(Vec<Choice>),
-}
-#[derive(Deserialize, Serialize, Clone)]
-enum Trigger {
-    LevelStart,
-    Enter(Rect),
-    /// Only reached from a choice.
-    Manual,
-}
-#[derive(Deserialize, Serialize, Clone)]
-struct Line {
-    who: String,
-    text: String,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    secs: f32,
-    /// Something that happens when this line comes up: "simon_kneels", "boss_claps". It lasts until the level is left.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    act: String,
-}
-fn is_zero(v: &f32) -> bool {
-    *v == 0.0
 }
 #[derive(Resource, Default)]
 struct Story {
@@ -306,7 +256,6 @@ struct Theme {
     props: String,
 }
 
-const FIRST_LEVEL: &str = "rootway";
 
 fn files(dir: &PathBuf, level: &str) -> [PathBuf; 2] {
     [dir.join("config/tuning.ron"), dir.join(format!("levels/{level}.ron"))]
@@ -388,10 +337,9 @@ fn main() {
         .init_resource::<Juice>()
         .init_resource::<Story>()
         .init_resource::<Stats>()
-        .init_resource::<editor::Editor>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
-        .add_systems(Startup, (setup, editor::setup))
-        .add_systems(Update, (read_input, hot_reload, editor::edit, build_geo, animate, boss, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
+        .add_systems(Startup, setup)
+        .add_systems(Update, (read_input, hot_reload, build_geo, animate, boss, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -604,9 +552,9 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
     };
 }
 
-fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>, ed: Res<editor::Editor>) {
+fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>) {
     // The world holds still in the menu and while a story choice is on screen.
-    if chooser.0 || story.ask.is_some() || ed.on {
+    if chooser.0 || story.ask.is_some() {
         return;
     }
     let g = &mut *game;
@@ -640,16 +588,37 @@ fn restart(game: &mut Game) {
 }
 
 /// Polls the tuning and level files twice a second and applies edits live.
-fn hot_reload(time: Res<Time>, mut acc: Local<f32>, mut game: ResMut<Game>, ed: Res<editor::Editor>) {
-    // The editor holds the level while it is open.
-    if ed.on {
-        return;
-    }
+fn hot_reload(time: Res<Time>, mut acc: Local<f32>, mut game: ResMut<Game>, mut story: ResMut<Story>, mut asked: Local<Option<Option<SystemTime>>>) {
     *acc += time.delta_secs();
     if *acc < 0.5 {
         return;
     }
     *acc = 0.0;
+    // The story editor can ask for a scene to be played: go to its level, stand in its area, start it.
+    let path = game.dir.join("story/play_request.ron");
+    let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let before = asked.replace(stamp);
+    if before.is_some() && before != Some(stamp) && stamp.is_some() {
+        let request = std::fs::read_to_string(&path).ok().and_then(|t| ron::from_str::<PlayRequest>(&t).ok());
+        let file = request.as_ref().and_then(|r| std::fs::read_to_string(game.dir.join(format!("story/{}.ron", r.level))).ok()).and_then(|t| ron::from_str::<StoryFile>(&t).ok());
+        if let (Some(r), Some(file)) = (request, file) {
+            let g = &mut *game;
+            g.level = r.level.clone();
+            restart(g);
+            g.stamps = stamps(&g.dir, &g.level);
+            if let Some(Trigger::Enter(a)) = file.scenes.iter().find(|s| s.id == r.scene).map(|s| s.trigger.clone()) {
+                let mut level = g.world.level.clone();
+                let starts = level.spawns.clone();
+                let at = (a.0 + a.2 / 2.0, a.1 + g.tuning.player.height / 2.0 + 4.0);
+                level.spawns = vec![at, (at.0 + 50.0, at.1)];
+                g.world = settled(level, &g.tuning, g.players);
+                g.world.level.spawns = starts;
+            }
+            let stamp = std::fs::metadata(g.dir.join(format!("story/{}.ron", r.level))).and_then(|m| m.modified()).ok();
+            *story = Story { file, stamp, level: r.level, flags: std::mem::take(&mut story.flags), start_at: Some(r.scene), ..default() };
+            return;
+        }
+    }
     let now = stamps(&game.dir, &game.level);
     if now == game.stamps {
         return;
@@ -1139,7 +1108,9 @@ fn hud(
     };
     // The top line is only for trouble (a file that failed to load) and, with F3, a line of details.
     let line = if show.0 {
-        format!("{:.0} fps   {} things   Tomatoes {}   {}   {}\n{}", stats.fps, stats.entities, game.world.enemies.len(), game.world.level.name, pad, game.status)
+        format!("{:.0} fps   {} things   Tomatoes {}   {}   player 1 at {:.0}, {:.0}   {}\nDrawn by: {}\n{}", stats.fps, stats.entities, game.world.enemies.len(), game.world.level.name, game.world.players[0].x, game.world.players[0].y, pad, stats.gpu, game.status)
+    } else if stats.software {
+        format!("SLOW: this is running without your graphics card ({}). Check the graphics driver.\n{}", stats.gpu, game.status)
     } else {
         game.status.clone()
     };
@@ -1192,15 +1163,11 @@ fn hotkeys(
     mut show: ResMut<ShowShapes>,
     mut views: ResMut<Views>,
     mut story: ResMut<Story>,
-    ed: Res<editor::Editor>,
     mut held: Local<Vec<Entity>>,
     mut ask_held: Local<bool>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if ed.on {
-        return;
-    }
     let pad = |b: GamepadButton| pads.iter().any(|(_, p)| p.just_pressed(b));
     // A story choice on screen: anyone can move the highlight and confirm.
     if !chooser.0 {
@@ -1385,8 +1352,16 @@ struct Stats {
     acc: f32,
     frames: u32,
     log: f32,
+    gpu: String,
+    software: bool,
 }
-fn stats(time: Res<Time>, all: Query<Entity>, mut s: ResMut<Stats>) {
+fn stats(time: Res<Time>, all: Query<Entity>, mut s: ResMut<Stats>, adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>) {
+    if s.gpu.is_empty() {
+        if let Some(a) = adapter {
+            s.gpu = format!("{} ({:?}, {:?})", a.name, a.device_type, a.backend);
+            s.software = format!("{:?}", a.device_type) == "Cpu";
+        }
+    }
     s.acc += time.delta_secs();
     s.frames += 1;
     s.log += time.delta_secs();
@@ -1769,23 +1744,6 @@ fn bouquet(
     }
 }
 
-/// Breaks a line of speech into rows short enough for a bubble.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut rows = vec![String::new()];
-    for word in text.split_whitespace() {
-        let last = rows.last_mut().unwrap();
-        if !last.is_empty() && last.chars().count() + 1 + word.chars().count() > width {
-            rows.push(word.to_string());
-        } else {
-            if !last.is_empty() {
-                last.push(' ');
-            }
-            last.push_str(word);
-        }
-    }
-    rows
-}
-
 /// Queues a scene: its flags are set, its lines are spoken, then its choice (if any) is asked.
 fn play_scene(story: &mut Story, scene: &Scene) {
     story.played.push(scene.id.clone());
@@ -1811,7 +1769,6 @@ fn story(
     ui: Res<StoryUi>,
     views: Res<Views>,
     mut story: ResMut<Story>,
-    ed: Res<editor::Editor>,
     mut parts: Query<(&mut Transform, Option<&mut Sprite>, Option<&mut Text2d>, Option<&mut Visibility>), With<BubblePart>>,
 ) {
     let dt = time.delta_secs();
@@ -1844,12 +1801,6 @@ fn story(
         }
     }
     let w = &game.world;
-    if ed.on {
-        if let Ok((_, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
-            *vis = Visibility::Hidden;
-        }
-        return;
-    }
     // A restarted level tells its story again.
     if w.tick < story.last_tick {
         story.played.clear();

@@ -1,10 +1,45 @@
-//! The story editor, inside the game. F1 opens and closes it.
+//! The story editor: its own small program. It reads and writes assets/story/<level>.ron,
+//! the files the game plays the story from. The game picks up changes while it runs.
 //! Every level has a page of scenes. A scene is a card: when it starts, what is said, and the choices that
-//! lead on to another scene or another level. Everything is written to assets/story as you go.
-use crate::*;
+//! lead on to another scene or another level.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[allow(dead_code)]
+#[path = "../sim.rs"]
+mod sim;
+#[path = "../story_data.rs"]
+mod story_data;
+
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::AccumulatedMouseScroll;
+use bevy::prelude::*;
 use bevy::text::LineBreak;
+use bevy::window::PrimaryWindow;
+use sim::Rect;
+use std::path::PathBuf;
+use story_data::*;
+
+fn asset_dir() -> PathBuf {
+    let beside_exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("assets")));
+    match beside_exe {
+        Some(p) if p.is_dir() => p,
+        _ => PathBuf::from("assets"),
+    }
+}
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window { title: "Charm Adventure: story editor".into(), resolution: (1400u32, 860u32).into(), ..default() }),
+            ..default()
+        }))
+        // Draw only when something happens, so the editor costs nothing while it sits open.
+        .insert_resource(bevy::winit::WinitSettings::desktop_app())
+        .insert_resource(ClearColor(Color::srgb(0.04, 0.04, 0.07)))
+        .init_resource::<Editor>()
+        .add_systems(Startup, setup)
+        .add_systems(Update, edit)
+        .run();
+}
 
 const CH: f32 = 9.0;
 const RH: f32 = 22.0;
@@ -28,6 +63,8 @@ struct Doc {
 #[derive(Clone, PartialEq)]
 enum Field {
     Id(usize),
+    /// The box a player walks into to start the scene, typed as x, y, width, height.
+    Area(usize),
     Needs(usize),
     Sets(usize),
     Who(usize, usize),
@@ -53,7 +90,6 @@ enum Act {
     DelScene(usize),
     Play(usize),
     TriggerMenu(usize),
-    AreaHere(usize),
     AddLine(usize),
     DelLine(usize, usize),
     UpLine(usize, usize),
@@ -81,7 +117,7 @@ struct Widget {
 
 #[derive(Resource, Default)]
 pub struct Editor {
-    pub on: bool,
+    dir: PathBuf,
     docs: Vec<Doc>,
     tab: usize,
     scroll: Vec2,
@@ -96,26 +132,18 @@ pub struct Editor {
 }
 
 #[derive(Component)]
-pub struct EditorRoot;
+struct EditorRoot;
 
-pub fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, mut ed: ResMut<Editor>) {
+    ed.dir = asset_dir();
+    ed.docs = load_docs(&ed.dir);
+    ed.dirty = true;
+    commands.spawn(Camera2d);
     commands.spawn((
         EditorRoot,
         Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), overflow: Overflow::clip(), ..default() },
-        BackgroundColor(Color::srgba(0.04, 0.04, 0.07, 0.97)),
-        GlobalZIndex(10),
-        Visibility::Hidden,
+        BackgroundColor(Color::srgb(0.04, 0.04, 0.07)),
     ));
-}
-
-pub fn level_text(level: &sim::Level) -> Result<String, String> {
-    let text = ron::ser::to_string_pretty(level, ron::ser::PrettyConfig::default().depth_limit(2)).map_err(|e| e.to_string())?;
-    Ok(format!("// Rects are (x, y, width, height) from the bottom-left, Y up.\n{text}\n"))
-}
-
-pub fn story_text(story: &StoryFile) -> Result<String, String> {
-    let text = ron::ser::to_string_pretty(story, ron::ser::PrettyConfig::default().depth_limit(4)).map_err(|e| e.to_string())?;
-    Ok(format!("// Written by the story editor (F1 in the game).\n{text}\n"))
 }
 
 /// Every level and its story, in the order the doors lead through them.
@@ -142,31 +170,21 @@ fn load_docs(dir: &PathBuf) -> Vec<Doc> {
     order
 }
 
-fn save(doc: &Doc, g: &mut Game, story: &mut Story, door_too: bool) -> Result<(), String> {
-    let path = g.dir.join(format!("story/{}.ron", doc.file));
+fn save(doc: &Doc, dir: &PathBuf, door_too: bool) -> Result<(), String> {
+    let path = dir.join(format!("story/{}.ron", doc.file));
     if !doc.story.scenes.is_empty() || path.exists() {
-        std::fs::create_dir_all(g.dir.join("story")).ok();
+        std::fs::create_dir_all(dir.join("story")).ok();
         std::fs::write(&path, story_text(&doc.story)?).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    if doc.file == g.level {
-        story.file = doc.story.clone();
-        story.stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     }
     if door_too {
         if let Some(to) = &doc.door {
-            let path = g.dir.join(format!("levels/{}.ron", doc.file));
+            let path = dir.join(format!("levels/{}.ron", doc.file));
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let mut level = sim::load_level(&text)?;
             if let Some(e) = level.exits.first_mut() {
                 e.to = to.clone();
             }
             std::fs::write(&path, level_text(&level)?).map_err(|e| format!("{}: {e}", path.display()))?;
-            if doc.file == g.level {
-                if let Some(e) = g.world.level.exits.first_mut() {
-                    e.to = to.clone();
-                }
-                g.stamps = stamps(&g.dir, &g.level);
-            }
         }
     }
     Ok(())
@@ -180,6 +198,10 @@ fn field_value(doc: &Doc, f: &Field) -> String {
     let s = &doc.story.scenes;
     match *f {
         Field::Id(i) => s.get(i).map(|s| s.id.clone()),
+        Field::Area(i) => s.get(i).and_then(|s| match s.trigger {
+            Trigger::Enter(r) => Some(format!("{:.0}, {:.0}, {:.0}, {:.0}", r.0, r.1, r.2, r.3)),
+            _ => None,
+        }),
         Field::Needs(i) => s.get(i).map(|s| s.requires.join(", ")),
         Field::Sets(i) => s.get(i).map(|s| s.set.join(", ")),
         Field::Who(i, l) => s.get(i).and_then(|s| s.lines.get(l)).map(|l| l.who.clone()),
@@ -210,6 +232,15 @@ fn set_field(doc: &mut Doc, f: &Field, text: String) -> Result<(), String> {
                 }
             }
             scenes[i].id = text;
+        }
+        Field::Area(i) => {
+            let n: Vec<f32> = text.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            if n.len() != 4 || n[2] <= 0.0 || n[3] <= 0.0 {
+                return Err("An area is four numbers: x, y, width, height.".into());
+            }
+            if let Some(s) = scenes.get_mut(i) {
+                s.trigger = Trigger::Enter(Rect(n[0], n[1], n[2], n[3]));
+            }
         }
         Field::Needs(i) => {
             if let Some(s) = scenes.get_mut(i) {
@@ -275,7 +306,7 @@ fn columns(story: &StoryFile) -> Vec<usize> {
     col
 }
 
-fn layout(ed: &Editor, playing: &str) -> Vec<Widget> {
+fn layout(ed: &Editor) -> Vec<Widget> {
     let mut out: Vec<Widget> = Vec::new();
     let Some(doc) = ed.docs.get(ed.tab) else { return out };
     let name_of = |file: &str| ed.docs.iter().find(|d| d.file == file).map(|d| d.name.clone()).unwrap_or_else(|| file.to_string());
@@ -326,13 +357,10 @@ fn layout(ed: &Editor, playing: &str) -> Vec<Widget> {
         put(&mut out, 8.0, y, 70.0, RH, "Starts".into(), DIM, None, None);
         put(&mut out, 78.0, y, CW - 86.0, RH, when, INK, Some(BTN), Some(Act::TriggerMenu(i)));
         y += RH + 4.0;
-        if let Trigger::Enter(r) = scene.trigger {
-            put(&mut out, 8.0, y, 190.0, RH, format!("area at {:.0}, {:.0}", r.0, r.1), DIM, None, None);
-            if doc.file == playing {
-                put(&mut out, 200.0, y, CW - 208.0, RH, "put it where player 1 is".into(), INK, Some(BTN), Some(Act::AreaHere(i)));
-            } else {
-                put(&mut out, 200.0, y, CW - 208.0, RH, "(play this level to move it)".into(), DIM, None, None);
-            }
+        if let Trigger::Enter(_) = scene.trigger {
+            put(&mut out, 8.0, y, 70.0, RH, "Area".into(), DIM, None, None);
+            let (t, fg, bg) = shown(Field::Area(i), "x, y, width, height");
+            put(&mut out, 78.0, y, CW - 86.0, RH, t, fg, Some(bg), Some(Act::Edit(Field::Area(i))));
             y += RH + 4.0;
         }
         for (label, field) in [("Only if", Field::Needs(i)), ("Sets", Field::Sets(i))] {
@@ -451,7 +479,7 @@ fn layout(ed: &Editor, playing: &str) -> Vec<Widget> {
     let h = ed.size.y;
     bar(0.0, h - BOTTOM, w, BOTTOM, String::new(), INK, Some(Color::srgb(0.07, 0.07, 0.11)), None);
     let help = if ed.note.is_empty() {
-        "Click any text to change it. Enter: done. Esc: cancel.   Wheel or arrows: scroll. Shift+wheel: sideways.   Ctrl+Z: undo.   Saved as you go.   F1: back to the game".to_string()
+        "Click any text to change it. Enter: done. Esc: cancel.   Wheel or arrows: scroll. Shift+wheel: sideways.   Ctrl+Z: undo.   Saved as you go.   PLAY: the running game jumps to that scene.   Areas: F3 in the game shows where player 1 is.".to_string()
     } else {
         ed.note.clone()
     };
@@ -472,49 +500,20 @@ fn layout(ed: &Editor, playing: &str) -> Vec<Widget> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn edit(
+fn edit(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     scroll: Res<AccumulatedMouseScroll>,
-    time: Res<Time>,
     mut typed: MessageReader<KeyboardInput>,
     window: Query<&Window, With<PrimaryWindow>>,
-    chooser: Res<Chooser>,
     mut ed: ResMut<Editor>,
-    mut game: ResMut<Game>,
-    mut story: ResMut<Story>,
-    mut root: Query<(Entity, &mut Visibility), With<EditorRoot>>,
+    root: Query<Entity, With<EditorRoot>>,
 ) {
     let ed = &mut *ed;
-    let g = &mut *game;
-    let Ok((root, mut vis)) = root.single_mut() else { return };
+    let Ok(root) = root.single() else { return };
     let Ok(win) = window.single() else { return };
     let events: Vec<KeyboardInput> = typed.read().filter(|e| e.state.is_pressed()).cloned().collect();
-    if keys.just_pressed(KeyCode::F1) && !chooser.0 {
-        if ed.on {
-            commit(ed, g, &mut story);
-            ed.on = false;
-            ed.menu = None;
-            *vis = Visibility::Hidden;
-            commands.entity(root).despawn_children();
-            return;
-        }
-        ed.on = true;
-        ed.docs = load_docs(&g.dir);
-        ed.tab = ed.docs.iter().position(|d| d.file == g.level).unwrap_or(0);
-        ed.scroll = Vec2::ZERO;
-        ed.focus = None;
-        ed.menu = None;
-        ed.arm_delete = None;
-        ed.undo.clear();
-        ed.note.clear();
-        ed.dirty = true;
-        *vis = Visibility::Visible;
-    }
-    if !ed.on {
-        return;
-    }
     let size = Vec2::new(win.width(), win.height());
     if size != ed.size {
         ed.size = size;
@@ -562,7 +561,7 @@ pub fn edit(
                 }
             }
             if done {
-                commit(ed, g, &mut story);
+                commit(ed);
             }
             if cancel {
                 ed.focus = None;
@@ -570,13 +569,17 @@ pub fn edit(
         } else {
             match ev.key_code {
                 KeyCode::Escape => ed.menu = None,
+                KeyCode::ArrowDown => ed.scroll.y += 70.0,
+                KeyCode::ArrowUp => ed.scroll.y -= 70.0,
+                KeyCode::ArrowRight => ed.scroll.x += 70.0,
+                KeyCode::ArrowLeft => ed.scroll.x -= 70.0,
                 KeyCode::KeyZ if ctrl => {
                     if let Some(docs) = ed.undo.pop() {
                         ed.docs = docs;
                         ed.tab = ed.tab.min(ed.docs.len().saturating_sub(1));
                         let mut note = "Undone.".to_string();
                         for d in &ed.docs {
-                            if let Err(e) = save(d, g, &mut story, true) {
+                            if let Err(e) = save(d, &ed.dir, true) {
                                 note = format!("SAVE FAILED  {e}");
                             }
                         }
@@ -588,14 +591,6 @@ pub fn edit(
         }
     }
     // Scrolling.
-    if ed.focus.is_none() {
-        let k = |a: KeyCode| keys.pressed(a) as i8 as f32;
-        let dir = Vec2::new(k(KeyCode::ArrowRight) - k(KeyCode::ArrowLeft), k(KeyCode::ArrowDown) - k(KeyCode::ArrowUp));
-        if dir != Vec2::ZERO {
-            ed.scroll += dir * 900.0 * time.delta_secs();
-            ed.dirty = true;
-        }
-    }
     if scroll.delta != Vec2::ZERO {
         let step = -scroll.delta.y.clamp(-1.0, 1.0) * 70.0;
         if shift {
@@ -620,7 +615,7 @@ pub fn edit(
             });
             let had_menu = ed.menu.is_some();
             if !matches!(hit, Some(Act::Edit(_))) || had_menu {
-                commit(ed, g, &mut story);
+                commit(ed);
             }
             if !matches!(hit, Some(Act::DelScene(_))) {
                 ed.arm_delete = None;
@@ -628,7 +623,7 @@ pub fn edit(
             match hit {
                 Some(Act::Pick(change)) => {
                     ed.menu = None;
-                    change_doc(ed, g, &mut story, |doc| match &change {
+                    change_doc(ed, |doc| match &change {
                         Change::Trigger(i, kind) => {
                             if let Some(s) = doc.story.scenes.get_mut(*i) {
                                 s.trigger = match (kind, &s.trigger) {
@@ -660,7 +655,7 @@ pub fn edit(
                 }
                 Some(Act::Edit(f)) => {
                     if ed.focus.as_ref().map(|x| &x.0) != Some(&f) {
-                        commit(ed, g, &mut story);
+                        commit(ed);
                         if let Some(doc) = ed.docs.get(ed.tab) {
                             let buf: Vec<char> = field_value(doc, &f).chars().collect();
                             let n = buf.len();
@@ -668,7 +663,7 @@ pub fn edit(
                         }
                     }
                 }
-                Some(Act::NewScene) => change_doc(ed, g, &mut story, |doc| {
+                Some(Act::NewScene) => change_doc(ed, |doc| {
                     let mut n = doc.story.scenes.len() + 1;
                     while doc.story.scenes.iter().any(|s| s.id == format!("scene {n}")) {
                         n += 1;
@@ -679,7 +674,7 @@ pub fn edit(
                 Some(Act::DelScene(i)) => {
                     if ed.arm_delete == Some(i) {
                         ed.arm_delete = None;
-                        change_doc(ed, g, &mut story, |doc| {
+                        change_doc(ed, |doc| {
                             if i < doc.story.scenes.len() {
                                 let id = doc.story.scenes.remove(i).id;
                                 for s in &mut doc.story.scenes {
@@ -701,18 +696,8 @@ pub fn edit(
                         ("only from a choice".into(), Change::Trigger(i, 2)),
                     ]));
                 }
-                Some(Act::AreaHere(i)) => {
-                    if let Some(pl) = g.world.players.first() {
-                        let r = Rect(((pl.x - 150.0) / 10.0).round() * 10.0, ((pl.y - g.tuning.player.height / 2.0) / 10.0).round() * 10.0, 300.0, 300.0);
-                        change_doc(ed, g, &mut story, |doc| {
-                            if let Some(s) = doc.story.scenes.get_mut(i) {
-                                s.trigger = Trigger::Enter(r);
-                            }
-                        });
-                    }
-                }
                 Some(Act::AddLine(i)) => {
-                    change_doc(ed, g, &mut story, |doc| {
+                    change_doc(ed, |doc| {
                         if let Some(s) = doc.story.scenes.get_mut(i) {
                             let who = match s.lines.last().map(|l| l.who.to_lowercase()) {
                                 Some(w) if w == "simon" => "charm",
@@ -725,21 +710,21 @@ pub fn edit(
                         ed.focus = Some((Field::Text(i, n.saturating_sub(1)), Vec::new(), 0));
                     }
                 }
-                Some(Act::DelLine(i, l)) => change_doc(ed, g, &mut story, |doc| {
+                Some(Act::DelLine(i, l)) => change_doc(ed, |doc| {
                     if let Some(s) = doc.story.scenes.get_mut(i) {
                         if l < s.lines.len() {
                             s.lines.remove(l);
                         }
                     }
                 }),
-                Some(Act::UpLine(i, l)) => change_doc(ed, g, &mut story, |doc| {
+                Some(Act::UpLine(i, l)) => change_doc(ed, |doc| {
                     if let Some(s) = doc.story.scenes.get_mut(i) {
                         if l > 0 && l < s.lines.len() {
                             s.lines.swap(l, l - 1);
                         }
                     }
                 }),
-                Some(Act::SwapWho(i, l)) => change_doc(ed, g, &mut story, |doc| {
+                Some(Act::SwapWho(i, l)) => change_doc(ed, |doc| {
                     if let Some(line) = doc.story.scenes.get_mut(i).and_then(|s| s.lines.get_mut(l)) {
                         line.who = if line.who.to_lowercase() == "simon" { "charm" } else { "simon" }.into();
                     }
@@ -748,7 +733,7 @@ pub fn edit(
                     ed.menu = Some((p, ACTS.iter().map(|a| (a.1.to_string(), Change::LineAct(i, l, a.0.to_string()))).collect()));
                 }
                 Some(Act::AddChoice(i)) => {
-                    change_doc(ed, g, &mut story, |doc| {
+                    change_doc(ed, |doc| {
                         if let Some(s) = doc.story.scenes.get_mut(i) {
                             s.choices.push(Choice { text: String::new(), set: vec![], goto: String::new(), level: String::new() });
                         }
@@ -757,7 +742,7 @@ pub fn edit(
                         ed.focus = Some((Field::Choice(i, n.saturating_sub(1)), Vec::new(), 0));
                     }
                 }
-                Some(Act::DelChoice(i, c)) => change_doc(ed, g, &mut story, |doc| {
+                Some(Act::DelChoice(i, c)) => change_doc(ed, |doc| {
                     if let Some(s) = doc.story.scenes.get_mut(i) {
                         if c < s.choices.len() {
                             s.choices.remove(c);
@@ -789,30 +774,16 @@ pub fn edit(
         }
     }
 
-    // Play from a scene: go to its level, stand in its area if it has one, and start it.
+    // Play from a scene: leave a note the running game picks up.
     if let Some(i) = play {
-        commit(ed, g, &mut story);
-        if let Some(doc) = ed.docs.get(ed.tab) {
-            if let Some(scene) = doc.story.scenes.get(i) {
-                g.level = doc.file.clone();
-                restart(g);
-                g.stamps = stamps(&g.dir, &g.level);
-                if let Trigger::Enter(r) = scene.trigger {
-                    let mut level = g.world.level.clone();
-                    let starts = level.spawns.clone();
-                    let at = (r.0 + r.2 / 2.0, r.1 + g.tuning.player.height / 2.0 + 4.0);
-                    level.spawns = vec![at, (at.0 + 50.0, at.1)];
-                    g.world = settled(level, &g.tuning, g.players);
-                    g.world.level.spawns = starts;
-                }
-                let path = g.dir.join(format!("story/{}.ron", doc.file));
-                *story = Story { file: doc.story.clone(), stamp: std::fs::metadata(&path).and_then(|m| m.modified()).ok(), level: doc.file.clone(), flags: std::mem::take(&mut story.flags), start_at: Some(scene.id.clone()), ..default() };
-                ed.on = false;
-                ed.menu = None;
-                *vis = Visibility::Hidden;
-                commands.entity(root).despawn_children();
-                return;
-            }
+        commit(ed);
+        if let Some((doc, scene)) = ed.docs.get(ed.tab).and_then(|d| d.story.scenes.get(i).map(|s| (d, s))) {
+            let request = PlayRequest { level: doc.file.clone(), scene: scene.id.clone() };
+            let path = ed.dir.join("story/play_request.ron");
+            ed.note = match ron::ser::to_string(&request).map_err(|e| e.to_string()).and_then(|t| std::fs::write(&path, t).map_err(|e| e.to_string())) {
+                Ok(()) => format!("Asked the game to play \"{}\" in {}. It jumps there if it is running.", scene.id, doc.name),
+                Err(e) => format!("COULD NOT ASK THE GAME  {e}"),
+            };
         }
     }
 
@@ -820,7 +791,7 @@ pub fn edit(
         return;
     }
     ed.dirty = false;
-    ed.widgets = layout(ed, &g.level);
+    ed.widgets = layout(ed);
     commands.entity(root).despawn_children();
     let (scroll, size) = (ed.scroll, ed.size);
     commands.entity(root).with_children(|c| {
@@ -850,7 +821,7 @@ pub fn edit(
 }
 
 /// Finishes the text being typed.
-fn commit(ed: &mut Editor, g: &mut Game, story: &mut Story) {
+fn commit(ed: &mut Editor) {
     let Some((field, buf, _)) = ed.focus.take() else { return };
     let text: String = buf.into_iter().collect();
     let Some(doc) = ed.docs.get(ed.tab) else { return };
@@ -862,7 +833,7 @@ fn commit(ed: &mut Editor, g: &mut Game, story: &mut Story) {
     match set_field(doc, &field, text) {
         Ok(()) => {
             ed.undo.push(before);
-            ed.note = match save(doc, g, story, false) {
+            ed.note = match save(doc, &ed.dir, false) {
                 Ok(()) => String::new(),
                 Err(e) => format!("SAVE FAILED  {e}"),
             };
@@ -872,8 +843,8 @@ fn commit(ed: &mut Editor, g: &mut Game, story: &mut Story) {
 }
 
 /// Makes one change to the open level's story and saves it.
-fn change_doc(ed: &mut Editor, g: &mut Game, story: &mut Story, change: impl FnOnce(&mut Doc)) {
-    commit(ed, g, story);
+fn change_doc(ed: &mut Editor, change: impl FnOnce(&mut Doc)) {
+    commit(ed);
     let before = ed.docs.clone();
     let Some(doc) = ed.docs.get_mut(ed.tab) else { return };
     let door = doc.door.clone();
@@ -883,7 +854,7 @@ fn change_doc(ed: &mut Editor, g: &mut Game, story: &mut Story, change: impl FnO
     if ed.undo.len() > 100 {
         ed.undo.remove(0);
     }
-    ed.note = match save(doc, g, story, door_changed) {
+    ed.note = match save(doc, &ed.dir, door_changed) {
         Ok(()) => String::new(),
         Err(e) => format!("SAVE FAILED  {e}"),
     };

@@ -3,7 +3,7 @@
 
     python3 packaging/wheel.py dist/charm-adventure manylinux_2_35_x86_64 0.1.42 out/
 
-After `pip install charm-adventure`, the command `charm-adventure` starts the game.
+After `pip install charm-adventure`, `charm-adventure` starts the game and `charm-story` the story editor.
 """
 import base64, hashlib, os, stat, sys, zipfile
 
@@ -12,13 +12,18 @@ LAUNCHER = '''"""Charm Adventure in Tomato Land. `charm-adventure` on the comman
 import os, subprocess, sys
 
 
-def main():
+def main(name="charm_adventure"):
     here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game")
-    exe = os.path.join(here, "charm_adventure.exe" if os.name == "nt" else "charm_adventure")
+    exe = os.path.join(here, name + (".exe" if os.name == "nt" else ""))
     if os.name != "nt":
         os.chmod(exe, 0o755)
         os.execv(exe, [exe] + sys.argv[1:])
     sys.exit(subprocess.call([exe] + sys.argv[1:]))
+
+
+def story():
+    """`charm-story` on the command line starts the story editor."""
+    main("charm_story")
 
 
 if __name__ == "__main__":
@@ -33,7 +38,7 @@ def build(folder, platform, version, out):
         for n in sorted(names):
             path = os.path.join(root, n)
             rel = os.path.relpath(path, folder).replace(os.sep, "/")
-            mode = 0o755 if rel.startswith("charm_adventure") else 0o644
+            mode = 0o755 if "/" not in rel else 0o644
             files[f"{NAME}/game/{rel}"] = (open(path, "rb").read(), mode)
     readme = open("README.md", encoding="utf-8").read() if os.path.exists("README.md") else ""
     files[f"{info}/METADATA"] = ((
@@ -42,7 +47,7 @@ def build(folder, platform, version, out):
         "Home-page: https://github.com/srlegrand/charm-adventure\nRequires-Python: >=3.8\n"
         "Description-Content-Type: text/markdown\n\n" + readme).encode(), 0o644)
     files[f"{info}/WHEEL"] = (f"Wheel-Version: 1.0\nGenerator: packaging/wheel.py\nRoot-Is-Purelib: false\nTag: py3-none-{platform}\n".encode(), 0o644)
-    files[f"{info}/entry_points.txt"] = (b"[console_scripts]\ncharm-adventure = charm_adventure:main\n", 0o644)
+    files[f"{info}/entry_points.txt"] = (b"[console_scripts]\ncharm-adventure = charm_adventure:main\ncharm-story = charm_adventure:story\n", 0o644)
     record = []
     os.makedirs(out, exist_ok=True)
     target = os.path.join(out, f"{NAME}-{version}-py3-none-{platform}.whl")
