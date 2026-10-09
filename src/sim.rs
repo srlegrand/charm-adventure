@@ -866,6 +866,33 @@ mod tests {
         }
     }
 
+    /// Walk the whole game by its doors: every door must open onto a level that exists, and the last place is the UK.
+    #[test]
+    fn the_doors_lead_from_the_caves_to_the_uk() {
+        let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
+        let open = |name: &str| load_level(&std::fs::read_to_string(format!("assets/levels/{name}.ron")).unwrap_or_else(|_| panic!("no level {name}"))).unwrap();
+        let mut name = "rootway".to_string();
+        let mut w = World::new(open(&name), &tuning, 2);
+        let mut route = vec![name.clone()];
+        while let Some(door) = w.level.exits.first().cloned() {
+            for p in &mut w.players {
+                p.x = door.rect.0 + door.rect.2 / 2.0;
+                p.y = door.rect.1 + tuning.player.height / 2.0;
+            }
+            w.step(&[Input::default(); 2], &tuning);
+            name = w.exit.clone().unwrap_or_else(|| panic!("the door in {name} did not open"));
+            w.travel(open(&name), &tuning);
+            for _ in 0..30 {
+                w.step(&[Input::default(); 2], &tuning);
+            }
+            assert!(w.players.iter().all(|p| p.on_ground && p.hp == tuning.player.max_hp), "{name}: bad arrival");
+            route.push(name.clone());
+            assert!(route.len() < 20, "the doors go round in a circle");
+        }
+        assert_eq!(route, ["rootway", "australia", "newzealand", "france", "uk"]);
+        assert!(w.level.actors.iter().any(|a| a.kind == "boss") && w.level.actors.iter().any(|a| a.kind == "partner"));
+    }
+
     #[test]
     fn exits_carry_lives_and_flowers_to_the_next_level() {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();

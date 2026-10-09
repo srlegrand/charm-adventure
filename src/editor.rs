@@ -905,6 +905,15 @@ mod tests {
             let back: StoryFile = ron::from_str(&story_text(&doc.story).unwrap()).unwrap();
             assert_eq!(story_text(&doc.story).unwrap(), story_text(&back).unwrap());
         }
+        // Every choice must lead somewhere that exists.
+        for doc in &docs {
+            for s in &doc.story.scenes {
+                for c in &s.choices {
+                    assert!(c.goto.is_empty() || doc.story.scenes.iter().any(|t| t.id == c.goto), "{}: no scene {}", doc.file, c.goto);
+                    assert!(c.level.is_empty() || docs.iter().any(|d| d.file == c.level), "{}: no level {}", doc.file, c.level);
+                }
+            }
+        }
         let uk = docs.iter().find(|d| d.file == "uk").unwrap();
         assert_eq!(uk.story.scenes[0].lines[1].act, "boss_claps");
     }

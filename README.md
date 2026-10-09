@@ -2,13 +2,22 @@
 
 A fast two-player co-op action platformer. Simon has a crowbar, Charm has a sword, and there are a lot of tomatoes out there.
 
-Written in Rust on Bevy. Early days: one level, three kinds of tomato, no boss yet.
+Written in Rust on Bevy. Early days: five places (the caves, Australia, New Zealand, France, the United Kingdom), three kinds of tomato, a story you can rewrite in the game, and a boss who does not fight yet.
 
-![Screenshot](docs/screenshot.png)
+![Concept art](docs/concept.png)
 
-## Download and play
+## Install with pip
 
-Every change is built automatically. Get the newest build from the [latest release](https://github.com/srlegrand/charm-adventure/releases/latest).
+```
+pip install charm-adventure
+charm-adventure
+```
+
+To update: `pip install --upgrade charm-adventure`. Every change is published to pip automatically. Linux needs glibc 2.35 or newer (Ubuntu 22.04 and later).
+
+## Or download and play
+
+Every change is also built as a plain download. Get the newest build from the [latest release](https://github.com/srlegrand/charm-adventure/releases/latest).
 
 **Windows**
 1. Download `charm-adventure-windows.zip` and unzip it.
@@ -39,7 +48,8 @@ Keep the `assets` folder next to the game; it will not start without it.
 | Send 10 flowers to your partner as a heart | B | G / Q |
 | Character and player menu | View / Select | Tab |
 | Split screen on and off | | F2 |
-| Show collision shapes | | F3 |
+| Story editor | | F1 |
+| Show collision shapes, frame rate | | F3 |
 | Restart, fullscreen, quit | | R, F11, Esc |
 
 ## Two players
@@ -53,8 +63,13 @@ Kill tomatoes to collect flowers into your bouquet. Send ten flowers to your par
 Everything is plain text and reloads while the game runs:
 
 - `assets/config/tuning.ron`: player and tomato speeds, jumps, attacks, health.
-- `assets/levels/rootway.ron`: platforms, thorns, where tomatoes start.
-- `assets/story/rootway.ron`: who says what, and when.
+- `assets/levels/*.ron`: platforms, thorns, where tomatoes start, where the door leads.
+- `assets/story/*.ron`: who says what, and when.
+- `assets/themes/*.ron`: the colours and backdrop of each place.
+
+## Tell your own story
+
+Press F1 in a game. Each place has a page of scenes. A scene is a card: when it starts, who says what, and the choices the players get. A choice can lead to another scene or to another place, so the choices decide the route. Click any text to change it. PLAY on a card jumps into the game at that scene. Everything is saved as you go.
 
 ## Build from source
 
@@ -74,4 +89,6 @@ sudo apt install libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
 - `src/sim.rs`: the gameplay simulation. It takes button presses and nothing else, so two machines can stay in step.
 - `src/main.rs`: window, input, drawing, effects, speech.
-- `design/`: the scripts that draw the art.
+- `src/editor.rs`: the story editor.
+- `design/`: the scripts that draw the art. `design/concept.py` draws the picture at the top of this page.
+- `packaging/wheel.py`: packs a build into a pip wheel.
