@@ -47,6 +47,7 @@ jobs:
           cp target/release/charm_adventure dist/charm-adventure/
           cp -r assets dist/charm-adventure/
           tar -C dist -czf charm-adventure-linux.tar.gz charm-adventure
+          python3 packaging/wheel.py dist/charm-adventure manylinux_2_35_x86_64 0.1.${{ github.run_number }} wheels
 
       - name: Build (Windows)
         if: matrix.name == 'windows'
@@ -57,6 +58,7 @@ jobs:
           Copy-Item target/release/charm_adventure.exe dist/charm-adventure/
           Copy-Item -Recurse assets dist/charm-adventure/
           Compress-Archive -Path dist/charm-adventure -DestinationPath charm-adventure-windows.zip
+          python packaging/wheel.py dist/charm-adventure win_amd64 "0.1.${{ github.run_number }}" wheels
 
       - name: Build (Mac, Intel and Apple Silicon in one file)
         if: matrix.name == 'mac'
@@ -68,6 +70,7 @@ jobs:
             target/x86_64-apple-darwin/release/charm_adventure \
             target/aarch64-apple-darwin/release/charm_adventure
           cp -r assets dist/charm-adventure/
+          python3 packaging/wheel.py dist/charm-adventure macosx_11_0_universal2 0.1.${{ github.run_number }} wheels
           cd dist && zip -qr ../charm-adventure-mac.zip charm-adventure
 
       - uses: actions/upload-artifact@v4
@@ -77,6 +80,7 @@ jobs:
             charm-adventure-linux.tar.gz
             charm-adventure-windows.zip
             charm-adventure-mac.zip
+            wheels/*.whl
           if-no-files-found: error
 
   release:
@@ -92,8 +96,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v0.1.${{ github.run_number }}" out/* \
+          gh release create "v0.1.${{ github.run_number }}" $(find out -type f) \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "Build ${{ github.run_number }}" \
             --generate-notes --latest
+
+  # pip install charm-adventure. Runs only once a PyPI token is saved as the repository secret PYPI_TOKEN.
+  pypi:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish wheels
+        if: env.PYPI_TOKEN != ''
+        run: |
+          pip install twine
+          twine upload --non-interactive -u __token__ -p "$PYPI_TOKEN" $(find out -name '*.whl')

@@ -387,10 +387,11 @@ fn main() {
         .init_resource::<ShowShapes>()
         .init_resource::<Juice>()
         .init_resource::<Story>()
+        .init_resource::<Stats>()
         .init_resource::<editor::Editor>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
         .add_systems(Startup, (setup, editor::setup))
-        .add_systems(Update, (read_input, hot_reload, editor::edit, build_geo, animate, boss, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
+        .add_systems(Update, (read_input, hot_reload, editor::edit, build_geo, animate, boss, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -1125,6 +1126,7 @@ fn hud(
     menu: Res<Menu>,
     story: Res<Story>,
     show: Res<ShowShapes>,
+    stats: Res<Stats>,
     pads: Query<(Entity, &Gamepad)>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
@@ -1137,7 +1139,7 @@ fn hud(
     };
     // The top line is only for trouble (a file that failed to load) and, with F3, a line of details.
     let line = if show.0 {
-        format!("Tomatoes {}   {}   {}\n{}", game.world.enemies.len(), game.world.level.name, pad, game.status)
+        format!("{:.0} fps   {} things   Tomatoes {}   {}   {}\n{}", stats.fps, stats.entities, game.world.enemies.len(), game.world.level.name, pad, game.status)
     } else {
         game.status.clone()
     };
@@ -1371,6 +1373,33 @@ fn boss(game: Res<Game>, story: Res<Story>, time: Res<Time>, mut parts: Query<(&
                 tf.rotation = Quat::from_rotation_z(if side < 0.0 { angle } else { std::f32::consts::PI - angle });
                 tf.scale = Vec3::new(1.0, -side, 1.0);
             }
+        }
+    }
+}
+
+/// Counts what is alive, for the F3 line and for hunting leaks (CHARM_STATS=1 prints it every two seconds).
+#[derive(Resource, Default)]
+struct Stats {
+    entities: usize,
+    fps: f32,
+    acc: f32,
+    frames: u32,
+    log: f32,
+}
+fn stats(time: Res<Time>, all: Query<Entity>, mut s: ResMut<Stats>) {
+    s.acc += time.delta_secs();
+    s.frames += 1;
+    s.log += time.delta_secs();
+    if s.acc >= 0.5 {
+        s.fps = s.frames as f32 / s.acc;
+        s.entities = all.iter().count();
+        s.acc = 0.0;
+        s.frames = 0;
+    }
+    if s.log >= 2.0 {
+        s.log = 0.0;
+        if std::env::var("CHARM_STATS").is_ok() {
+            eprintln!("STATS fps {:.0} entities {}", s.fps, s.entities);
         }
     }
 }
