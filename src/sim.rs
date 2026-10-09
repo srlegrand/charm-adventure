@@ -217,6 +217,8 @@ pub struct Enemy {
 pub enum Event {
     Swing { player: usize },
     Dash { player: usize },
+    /// The second jump, in mid-air.
+    AirJump { player: usize },
     Hit { x: f32, y: f32, dir: f32 },
     Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32, combo: u32, player: usize },
     Hurt { x: f32, y: f32 },
@@ -559,6 +561,7 @@ impl World {
                 } else if p.air_jumps_left > 0 {
                     p.air_jumps_left -= 1;
                     p.vy = t.air_jump_speed;
+                    self.events.push(Event::AirJump { player: i });
                 } else {
                     jumped = false;
                 }

@@ -443,7 +443,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         let weapon = part("weapon", body_at, 0.03);
         commands.entity(body).add_children(&[back, head, weapon]);
         let weapon_axis = rig.weapon_axis;
-        let root = commands.spawn((Rig { who, leg_b, leg_f, body, head, weapon, weapon_axis }, Pose { v: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0], grounded: true, squash: 0.0 }, Transform::default(), Visibility::Hidden)).id();
+        let root = commands.spawn((Rig { who, leg_b, leg_f, body, head, weapon, weapon_axis }, Pose { v: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0], grounded: true, squash: 0.0, flip: 0.0, air_jumps: 0 }, Transform::default(), Visibility::Hidden)).id();
         commands.entity(root).add_children(&[leg_b, leg_f, body]);
     }
 }
@@ -703,6 +703,9 @@ struct Pose {
     v: [f32; 8],
     grounded: bool,
     squash: f32,
+    /// Time left on the double-jump flip, and the air jumps seen last frame (to spot a new one).
+    flip: f32,
+    air_jumps: u8,
 }
 
 fn animate(
@@ -757,6 +760,20 @@ fn animate(
             bob = stride.abs() * 4.0;
             snap = 40.0;
         }
+        // Double jump: a tight tucked flip, one full turn.
+        const FLIP_TIME: f32 = 0.38;
+        if p.air_jumps_left < pose.air_jumps && !p.on_ground {
+            pose.flip = FLIP_TIME;
+        }
+        pose.air_jumps = p.air_jumps_left;
+        if p.on_ground || p.dash_t > 0.0 || p.hitstun > 0.0 {
+            pose.flip = 0.0;
+        }
+        pose.flip = (pose.flip - dt).max(0.0);
+        if pose.flip > 0.0 {
+            g = [1.5, 1.7, -0.7, 0.5, -1.2, 0.0, 0.92, 0.92];
+            snap = 90.0;
+        }
         if p.down {
             // Out of lives: flat on the ground until the partner passes one over.
             g = [0.2, -0.1, 0.1, 0.3, 0.6, 1.5, 1.0, 1.0];
@@ -792,7 +809,9 @@ fn animate(
         let v = pose.v;
         let sq = pose.squash;
         // Lean about the body centre, not the feet, so the figure stays over its collision box.
-        let lean = v[5] * p.facing;
+        // The flip spins the whole figure forward once, easing out.
+        let turn = if pose.flip > 0.0 { let u = 1.0 - pose.flip / FLIP_TIME; -(1.0 - (1.0 - u).powi(2)) * std::f32::consts::TAU } else { 0.0 };
+        let lean = (v[5] + turn) * p.facing;
         let half = t.height / 2.0;
         tf.translation = Vec3::new(x + lean.sin() * half, y - lean.cos() * half + bob, 2.0);
         tf.rotation = Quat::from_rotation_z(lean);
@@ -1193,6 +1212,26 @@ fn juice(
                 let offset = Vec2::new(0.0, lift);
                 let id = spawn_fx(&mut commands, sprite, Vec2::new(p.x, p.y) + offset, 3.5, rot, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.16, max: 0.16, spin: 0.0, grow: 0.5 });
                 commands.entity(id).insert(OnPlayer(player, offset));
+            }
+            sim::Event::AirJump { player } => {
+                // The flip is mostly speed lines: two crescents whirling round the body, a ring, and a kick of light.
+                if let Some(p) = w.players.get(player) {
+                    let pos = Vec2::new(p.x, p.y);
+                    for k in 0..2 {
+                        let mut sprite = Sprite::from_image(art.slash.clone());
+                        sprite.custom_size = Some(Vec2::splat(t.height * 1.5));
+                        sprite.color = Color::srgb(1.9, 1.8, 1.6);
+                        sprite.flip_y = p.facing > 0.0;
+                        let id = spawn_fx(&mut commands, sprite, pos, 3.5, k as f32 * std::f32::consts::PI, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.34, max: 0.34, spin: -p.facing * 22.0, grow: 0.6 });
+                        commands.entity(id).insert(OnPlayer(player, Vec2::ZERO));
+                    }
+                    let mut ring = Sprite::from_image(art.ring.clone());
+                    ring.custom_size = Some(Vec2::new(t.width * 2.2, 10.0));
+                    ring.color = Color::srgb(1.8, 1.7, 1.5);
+                    spawn_fx(&mut commands, ring, pos - Vec2::Y * t.height * 0.5, 1.9, 0.0, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.22, max: 0.22, spin: 0.0, grow: 5.0 });
+                    light(&mut commands, pos, 220.0, 0.14, 0.2);
+                    burst(&mut commands, &mut juice, pos - Vec2::Y * t.height * 0.4, 8, 220.0, 16.0, white, 0.0);
+                }
             }
             sim::Event::Dash { player } => {
                 if let Some(p) = w.players.get(player) {
