@@ -131,9 +131,21 @@ pub struct EnemySpawn {
     pub y: f32,
 }
 
+/// A doorway: walking into the box leaves for another level.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Exit {
+    pub rect: Rect,
+    pub to: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Level {
     pub name: String,
+    /// Which look to draw it with: a file name in assets/themes.
+    #[serde(default)]
+    pub theme: String,
+    #[serde(default)]
+    pub exits: Vec<Exit>,
     pub bounds: Rect,
     pub spawns: Vec<(f32, f32)>,
     pub solids: Vec<Rect>,
@@ -236,6 +248,8 @@ pub struct World {
     pub tick: u32,
     /// Ticks left of the freeze that follows a hit.
     pub hitstop: u32,
+    /// Set when a player walks through an exit: the level to go to next.
+    pub exit: Option<String>,
     pub events: Vec<Event>,
 }
 
@@ -389,7 +403,12 @@ impl World {
                 Player::new(s.0, s.1, &tuning.player)
             })
             .collect();
-        let enemies = level
+        let enemies = Self::spawn_enemies(&level, tuning);
+        World { level, players, enemies, tick: 0, hitstop: 0, exit: None, events: Vec::new() }
+    }
+
+    fn spawn_enemies(level: &Level, tuning: &Tuning) -> Vec<Enemy> {
+        level
             .enemies
             .iter()
             .filter_map(|s| {
@@ -407,8 +426,22 @@ impl World {
                     hp: t.hp, on_ground: false, timer: 0.0, stun: 0.0, flash: 0.0,
                 })
             })
-            .collect();
-        World { level, players, enemies, tick: 0, hitstop: 0, events: Vec::new() }
+            .collect()
+    }
+
+    /// Moves everyone to another level. Lives, flowers and score come along.
+    pub fn travel(&mut self, level: Level, tuning: &Tuning) {
+        self.enemies = Self::spawn_enemies(&level, tuning);
+        for (i, p) in self.players.iter_mut().enumerate() {
+            let s = level.spawns[i % level.spawns.len()];
+            let (hp, score, flowers, down) = (p.hp, p.score, p.flowers, p.down);
+            *p = Player::new(s.0, s.1, &tuning.player);
+            (p.hp, p.score, p.flowers, p.down) = (hp, score, flowers, down);
+        }
+        self.level = level;
+        self.hitstop = 0;
+        self.exit = None;
+        self.events.clear();
     }
 
     pub fn step(&mut self, inputs: &[Input], tuning: &Tuning) {
@@ -770,6 +803,13 @@ impl World {
             }
         }
         self.enemies.retain(|e| e.hp > 0);
+        if self.exit.is_none() {
+            for p in self.players.iter().filter(|p| !p.down) {
+                if let Some(e) = self.level.exits.iter().find(|e| e.rect.contains(p.x, p.y)) {
+                    self.exit = Some(e.to.clone());
+                }
+            }
+        }
     }
 }
 
@@ -793,6 +833,8 @@ mod tests {
             spawns: vec![(500.0, 100.0)],
             solids: vec![Rect(0.0, 0.0, 2000.0, 40.0), Rect(900.0, 40.0, 40.0, 600.0)],
             hazards: vec![],
+            theme: String::new(),
+            exits: vec![],
             enemies: vec![],
         };
         let mut w = World::new(level, &tuning, 1);
@@ -804,7 +846,35 @@ mod tests {
 
     #[test]
     fn shipped_assets_parse() {
-        load_level(include_str!("../assets/levels/rootway.ron")).unwrap();
+        let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
+        for text in [include_str!("../assets/levels/rootway.ron"), include_str!("../assets/levels/glasshouse.ron"), include_str!("../assets/levels/cannery.ron")] {
+            let level = load_level(text).unwrap();
+            assert!(!level.spawns.is_empty());
+            // Nobody starts inside rock or on thorns, and every tomato is a known kind.
+            for s in &level.spawns {
+                let body = Rect::centered(s.0, s.1, tuning.player.width, tuning.player.height);
+                assert!(!hits(&level.solids, &body) && !level.hazards.iter().any(|h| h.overlaps(&body)), "{}: bad spawn", level.name);
+            }
+            for e in &level.enemies {
+                assert!(tuning.enemies.contains_key(&e.kind), "{}: unknown tomato {}", level.name, e.kind);
+            }
+        }
+    }
+
+    #[test]
+    fn exits_carry_lives_and_flowers_to_the_next_level() {
+        let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
+        let mut a = load_level(include_str!("../assets/levels/rootway.ron")).unwrap();
+        a.exits = vec![Exit { rect: Rect(0.0, 0.0, 400.0, 400.0), to: "glasshouse".into() }];
+        let b = load_level(include_str!("../assets/levels/glasshouse.ron")).unwrap();
+        let mut w = World::new(a, &tuning, 1);
+        w.players[0].hp = 3;
+        w.players[0].flowers = 7;
+        w.step(&[Input::default()], &tuning);
+        assert_eq!(w.exit.as_deref(), Some("glasshouse"));
+        w.travel(b, &tuning);
+        assert_eq!((w.players[0].hp, w.players[0].flowers, w.exit.is_none()), (3, 7, true));
+        assert_eq!(w.level.name, "The Glasshouse");
     }
 
     #[test]
@@ -902,6 +972,8 @@ mod tests {
             spawns: vec![(500.0, 100.0), (700.0, 100.0)],
             solids: vec![Rect(0.0, 0.0, 2000.0, 40.0)],
             hazards: vec![],
+            theme: String::new(),
+            exits: vec![],
             enemies: vec![],
         };
         let mut w = World::new(level, &tuning, 2);

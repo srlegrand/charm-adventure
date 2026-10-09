@@ -125,7 +125,10 @@ render(f'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">{bgdef
 
 # props, effects and interface pieces
 Kc = T.K; St = T.S
-def prop(name, w, h, body): render(f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">{bgdefs}{body}</svg>', f'{OUT}/{name}.png', w, h)
+PROPS = {}
+def prop(name, w, h, body):
+    PROPS[name] = (w, h, body)
+    render(f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">{bgdefs}{body}</svg>', f'{OUT}/{name}.png', w, h)
 prop('props/pot', 96, 110, f'<circle cx="48" cy="22" r="10" fill="none" stroke="{Kc}" stroke-width="8"/><circle cx="48" cy="66" r="38" fill="url(#pot)" {St(6)}/><path d="M24,50 Q48,38 72,50" stroke="{Kc}" stroke-width="4" fill="none" opacity=".7"/><path d="M26,44 q12,-14 30,-14" stroke="#e8b070" stroke-width="5" fill="none" stroke-linecap="round" opacity=".7"/>')
 prop('props/lantern', 96, 200, f'<path d="M48,0 Q56,60 48,112" stroke="{Kc}" stroke-width="9" fill="none"/><path d="M48,0 Q56,60 48,112" stroke="#35502a" stroke-width="4" fill="none"/><circle cx="48" cy="150" r="36" fill="url(#fruit)" {St(6)}/><path d="M48,116 l-22,-6 l14,12 l-10,14 l18,-10 l18,10 l-10,-14 l14,-12Z" fill="#4c8a3c" {St(5)}/><path d="M30,138 q8,-14 24,-14" stroke="#fff3d0" stroke-width="6" fill="none" stroke-linecap="round" opacity=".8"/>')
 vine = f'<path d="M40,0 C60,60 20,110 44,170 C58,210 34,240 40,270" stroke="{Kc}" stroke-width="10" fill="none" stroke-linecap="round"/><path d="M40,0 C60,60 20,110 44,170 C58,210 34,240 40,270" stroke="#35502a" stroke-width="4" fill="none" stroke-linecap="round"/>'
@@ -145,4 +148,66 @@ prop('ui/bubble', 96, 96, f'<rect x="6" y="6" width="84" height="84" rx="26" fil
 prop('ui/tail', 48, 48, f'<path d="M6,2 L42,2 L20,44Z" fill="#fff8ea" stroke="{Kc}" stroke-width="7" stroke-linejoin="round"/><rect x="8" y="0" width="32" height="7" fill="#fff8ea"/>')
 prop('ui/wrap', 64, 80, f'<path d="M14,6 L50,6 L40,76 L24,76Z" fill="#e9d2a0" {St(6)}/><path d="M16,30 Q32,40 48,30" stroke="#b3262a" stroke-width="7" fill="none"/>')
 render(f'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><defs><radialGradient id="l"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".4" stop-color="#fff" stop-opacity=".3"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="128" height="128" fill="url(#l)"/></svg>', f'{OUT}/fx/light.png', 128, 128)
+
+# ---- themes: each level look has its own backdrop and its own recoloured set of props ----
+import shutil
+def themed(theme, cmap, far, mid):
+    render(f'<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000">{far}</svg>', f'{OUT}/bg/{theme}_far.png', 1600, 1000)
+    render(f'<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000">{mid}</svg>', f'{OUT}/bg/{theme}_mid.png', 1600, 1000)
+    for name, (w, h, body) in PROPS.items():
+        if not name.startswith('props/'): continue
+        svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">{bgdefs}{body}</svg>'
+        for old, new in cmap.items(): svg = svg.replace(old, new)
+        render(svg, f'{OUT}/props/{theme}/{name[6:]}.png', w, h)
+# cellar: the warm dark look already drawn above
+os.makedirs(f'{OUT}/props/cellar', exist_ok=True)
+shutil.copy(f'{OUT}/bg/far.png', f'{OUT}/bg/cellar_far.png'); shutil.copy(f'{OUT}/bg/mid.png', f'{OUT}/bg/cellar_mid.png')
+for name in PROPS:
+    if name.startswith('props/'): shutil.copy(f'{OUT}/{name}.png', f'{OUT}/props/cellar/{name[6:]}.png')
+
+# glasshouse: bright daylight under white iron and glass
+R = random.Random(3)
+gd = """<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fd6e8"/><stop offset=".6" stop-color="#d8f2e4"/><stop offset="1" stop-color="#f6f0c8"/></linearGradient>
+<filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="20"/></filter><filter id="b3" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter></defs>"""
+far = [gd, '<rect width="1600" height="1000" fill="url(#sky)"/>', '<circle cx="1180" cy="210" r="210" fill="#fff8d0" opacity=".7" filter="url(#soft)"/><circle cx="1180" cy="210" r="70" fill="#fffbe6"/>']
+for i in range(7):
+    x = R.uniform(0, 1600); y = R.uniform(60, 420); w = R.uniform(120, 260)
+    far.append(f'<ellipse cx="{x:.0f}" cy="{y:.0f}" rx="{w:.0f}" ry="{w*.22:.0f}" fill="#ffffff" opacity=".55" filter="url(#b3)"/>')
+far.append('<path d="M0,1000 L0,700 Q200,600 400,680 T800,650 T1200,690 T1600,640 L1600,1000Z" fill="#9fd9a0" opacity=".8"/><path d="M0,1000 L0,790 Q260,700 520,770 T1040,750 T1600,780 L1600,1000Z" fill="#7cc487" opacity=".9"/>')
+ribs = ''
+for x in range(0, 1601, 200): ribs += f'<path d="M{x},1000 L{x},260 Q{x+100},60 {x+200},260" stroke="#ffffff" stroke-width="9" fill="none" opacity=".75"/>'
+for y in (260, 460, 660): ribs += f'<path d="M0,{y} H1600" stroke="#ffffff" stroke-width="5" opacity=".6"/>'
+far.append(ribs)
+mid = [gd, '<g filter="url(#b3)">']
+for x, s in [(120, 1.0), (520, .8), (1010, 1.15), (1420, .9)]:
+    leaves = ''.join(f'<path transform="rotate({a} {x} 1000)" d="M{x},1000 C{x-60*s},{820-160*s:.0f} {x-40*s},{640-200*s:.0f} {x},{520-220*s:.0f} C{x+40*s},{640-200*s:.0f} {x+60*s},{820-160*s:.0f} {x},1000Z" fill="{c}"/>' for a, c in [(-38, '#3f9a5a'), (-16, '#57b06a'), (8, '#3f9a5a'), (30, '#6cc47c'), (52, '#4aa862')])
+    mid.append(leaves)
+mid.append('</g><rect x="-100" y="700" width="1800" height="240" fill="#ffffff" opacity=".18" filter="url(#soft)"/>')
+themed('glasshouse', {'#8a5a2c': '#f0a878', '#3a2414': '#c8643a', '#120b08': '#8a3a1c', '#e8b070': '#ffe0c8',
+                      '#ffd08a': '#ffe0f0', '#e8823a': '#ff7ab0', '#8a3414': '#b03a70', '#fff3d0': '#ffffff',
+                      '#35502a': '#2f7a3a', '#4c8a3c': '#6cc85a', '#1c110b': '#4a6a3a', '#6a4020': '#a8dc7a',
+                      '#170e09': '#f2faf4', '#5a3418': '#a8cfc0'}, ''.join(far), ''.join(mid))
+
+# cannery: cold steel at night, lit by neon
+R = random.Random(8)
+cd = """<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#070a1c"/><stop offset=".6" stop-color="#151238"/><stop offset="1" stop-color="#2a1444"/></linearGradient>
+<filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="22"/></filter><filter id="b3" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter><filter id="b6" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6"/></filter></defs>"""
+far = [cd, '<rect width="1600" height="1000" fill="url(#sky)"/>']
+tanks = ''
+for x, w, h in [(80, 220, 620), (420, 160, 480), (700, 260, 700), (1080, 180, 540), (1340, 240, 660)]:
+    tanks += f'<path d="M{x},1000 L{x},{1000-h+w/2:.0f} Q{x+w/2:.0f},{1000-h-w/3:.0f} {x+w},{1000-h+w/2:.0f} L{x+w},1000Z" fill="#101632"/>'
+    for k in range(3): tanks += f'<path d="M{x},{1000-h+w/2+60+k*150:.0f} H{x+w}" stroke="#1e2850" stroke-width="8"/>'
+far.append(f'<g filter="url(#b6)">{tanks}</g>')
+for x, y, c in [(300, 300, '#ff3a9a'), (860, 220, '#4fd0ff'), (1260, 380, '#ff3a9a'), (620, 520, '#4fd0ff')]:
+    far.append(f'<circle cx="{x}" cy="{y}" r="150" fill="{c}" opacity=".16" filter="url(#soft)"/><rect x="{x-46}" y="{y-12}" width="92" height="24" rx="12" fill="none" stroke="{c}" stroke-width="6" opacity=".85"/>')
+for i in range(40):
+    far.append(f'<circle cx="{R.uniform(0,1600):.0f}" cy="{R.uniform(0,600):.0f}" r="{R.uniform(.8,2.2):.1f}" fill="#cfe6ff" opacity="{R.uniform(.2,.7):.2f}"/>')
+mid = [cd, '<g filter="url(#b3)"><path d="M0,330 H1600 M0,372 H1600" stroke="#0c1026" stroke-width="26"/><path d="M0,330 H1600" stroke="#2a3466" stroke-width="4"/>']
+for x in range(60, 1600, 260):
+    mid.append(f'<path d="M{x},330 V1000" stroke="#0c1026" stroke-width="34"/><path d="M{x-10},330 V1000" stroke="#2a3466" stroke-width="4"/><path d="M{x-17},420 h34 M{x-17},620 h34 M{x-17},820 h34" stroke="#2a3466" stroke-width="6"/>')
+mid.append('<path d="M0,720 Q400,690 800,730 T1600,700" stroke="#0c1026" stroke-width="22" fill="none"/></g><rect x="-100" y="760" width="1800" height="220" fill="#ff3a9a" opacity=".08" filter="url(#soft)"/>')
+themed('cannery', {'#8a5a2c': '#d0d8ea', '#3a2414': '#6a7494', '#120b08': '#20283c', '#e8b070': '#ffffff',
+                   '#ffd08a': '#e6ffff', '#e8823a': '#4fd0ff', '#8a3414': '#1a5a9a', '#fff3d0': '#ffffff',
+                   '#35502a': '#2a3048', '#4c8a3c': '#5a6484', '#1c110b': '#1a2034', '#6a4020': '#4fd0ff',
+                   '#170e09': '#0e1428', '#5a3418': '#b03a9a', '#d8392f': '#ff3a9a'}, ''.join(far), ''.join(mid))
 print('ok')

@@ -1,0 +1,15 @@
+// The warm dark cellar look. Colours are (red, green, blue) from 0 to 1; values above 1 glow.
+(
+    clear: (0.04, 0.027, 0.02),        // what shows where nothing is drawn
+    rock: (0.045, 0.03, 0.022),
+    brick: (0.085, 0.056, 0.04),       // stonework inside the rock
+    trim: (0.72, 0.45, 0.17),          // the lip along walkable tops
+    side: (0.24, 0.15, 0.08),          // edges of walls and undersides
+    blade: (0.3, 0.46, 0.2),           // grass
+    lantern: (1.7, 1.45, 1.2),         // tint of the hanging lanterns
+    light: (1.0, 0.8, 0.5, 0.16),      // pool of light around each lantern (last number is strength)
+    scenery: (1.0, 1.0, 1.0, 0.85),    // tint of the far arches and vines
+    far: "sprites/bg/cellar_far.png",
+    mid: "sprites/bg/cellar_mid.png",
+    props: "sprites/props/cellar",
+)

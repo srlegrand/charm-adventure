@@ -1,0 +1,15 @@
+// Cold steel at night, lit by neon.
+(
+    clear: (0.03, 0.04, 0.1),
+    rock: (0.07, 0.09, 0.16),
+    brick: (0.1, 0.13, 0.22),
+    trim: (0.31, 0.82, 1.0),
+    side: (0.16, 0.2, 0.36),
+    blade: (0.35, 0.4, 0.6),
+    lantern: (1.3, 1.7, 2.0),
+    light: (0.3, 0.8, 1.0, 0.2),
+    scenery: (1.0, 1.0, 1.0, 0.9),
+    far: "sprites/bg/cannery_far.png",
+    mid: "sprites/bg/cannery_mid.png",
+    props: "sprites/props/cannery",
+)

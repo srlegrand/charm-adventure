@@ -1,11 +1,16 @@
-// Speech for The Rootway. Edit and save while the game runs.
+// Story for The Rootway. Edit and save while the game runs.
 //
-// A scene is a list of lines that play one after another as speech bubbles.
-//   trigger: LevelStart            plays when the level begins
-//            Enter((x, y, w, h))   plays the first time a player walks into that box (level units, Y up)
-//   who:     "simon", "charm" or "louis". If that character is not in the game, the bubble
-//            shows at the top of the screen with their name.
-//   secs:    how long the line stays up. Leave it out and the time is worked out from the length.
+// A scene is a list of speech lines, optionally ending in a choice.
+//   id:       a name for the scene, unique in this file
+//   trigger:  LevelStart            when the level begins
+//             Enter((x, y, w, h))   the first time a player walks into that box (level units, Y up)
+//             Manual                only when a choice sends the story here
+//   requires: flags that must all be set for the scene to play (leave out for none)
+//   set:      flags to set when the scene plays (flags last for the whole game)
+//   lines:    who says what. who is "simon", "charm" or "louis"; anyone not in the game speaks
+//             from the top of the screen. secs is how long a line stays up (left out: worked out from length).
+//   choices:  after the lines, the game pauses and player 1 picks one. Each choice can
+//             set flags, go to another scene (goto: "id"), or go to another level (level: "file name").
 (
     scenes: [
         (
@@ -17,13 +22,17 @@
                 (who: "simon", text: "I'll save you!"),
             ],
         ),
-        // Example of a place trigger (remove the two slashes on each line to use it):
-        // (
-        //     id: "great_hall",
-        //     trigger: Enter((8320.0, 100.0, 200.0, 400.0)),
-        //     lines: [
-        //         (who: "charm", text: "It is too quiet in here.", secs: 2.5),
-        //     ],
-        // ),
+        // PLACEHOLDER WORDING: this fork is here to show branching working. Rewrite freely.
+        (
+            id: "fork",
+            trigger: Enter((8950.0, 100.0, 380.0, 500.0)),
+            lines: [
+                (who: "simon", text: "Two ways on. Which one?"),
+            ],
+            choices: [
+                (text: "The Glasshouse", set: ["took_glasshouse"], level: "glasshouse"),
+                (text: "The Cannery", set: ["took_cannery"], level: "cannery"),
+            ],
+        ),
     ],
 )

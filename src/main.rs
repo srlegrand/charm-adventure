@@ -22,6 +22,9 @@ struct Game {
     tuning: Tuning,
     input: [sim::Input; 2],
     players: usize,
+    /// File name of the level being played, without the extension.
+    level: String,
+    theme: Theme,
     dir: PathBuf,
     stamps: [Option<SystemTime>; 2],
     status: String,
@@ -56,12 +59,40 @@ struct StoryFile {
 struct Scene {
     id: String,
     trigger: Trigger,
+    /// Flags that must all be set for this scene to play.
+    #[serde(default)]
+    requires: Vec<String>,
+    /// Flags set when it plays.
+    #[serde(default)]
+    set: Vec<String>,
+    #[serde(default)]
     lines: Vec<Line>,
+    /// Offered after the lines; the game waits for an answer.
+    #[serde(default)]
+    choices: Vec<Choice>,
+}
+/// One answer to a choice: it can set flags, jump to another scene, or leave for another level.
+#[derive(Deserialize, Clone)]
+struct Choice {
+    text: String,
+    #[serde(default)]
+    set: Vec<String>,
+    #[serde(default)]
+    goto: String,
+    #[serde(default)]
+    level: String,
+}
+#[derive(Clone)]
+enum Beat {
+    Say(Line),
+    Ask(Vec<Choice>),
 }
 #[derive(Deserialize, Clone)]
 enum Trigger {
     LevelStart,
     Enter(Rect),
+    /// Only reached from a choice.
+    Manual,
 }
 #[derive(Deserialize, Clone)]
 struct Line {
@@ -76,7 +107,13 @@ struct Story {
     stamp: Option<SystemTime>,
     poll: f32,
     played: Vec<String>,
-    queue: std::collections::VecDeque<Line>,
+    queue: std::collections::VecDeque<Beat>,
+    /// The level the loaded story belongs to.
+    level: String,
+    /// Things the story remembers for the whole game.
+    flags: Vec<String>,
+    /// A choice on screen: the answers and which one is highlighted.
+    ask: Option<(Vec<Choice>, usize)>,
     current: Option<(Line, f32)>,
     last_tick: u32,
 }
@@ -107,6 +144,7 @@ struct BgLayer {
     factor: f32,
     slot: f32,
     cam: usize,
+    mid: bool,
 }
 /// A cutout figure: a root at the feet with rotating parts under it.
 #[derive(Component)]
@@ -183,7 +221,6 @@ struct Art {
     wedge: Handle<Image>,
     leafcap: Handle<Image>,
     heart: Handle<Image>,
-    props: HashMap<&'static str, Handle<Image>>,
     flowers: Vec<Handle<Image>>,
 }
 
@@ -235,28 +272,65 @@ fn asset_dir() -> PathBuf {
     }
 }
 
-fn files(dir: &PathBuf) -> [PathBuf; 2] {
-    [dir.join("config/tuning.ron"), dir.join("levels/rootway.ron")]
+/// How a level is painted: colours, backdrop and prop set. One file per look in assets/themes.
+#[derive(Deserialize, Clone)]
+struct Theme {
+    clear: (f32, f32, f32),
+    rock: (f32, f32, f32),
+    brick: (f32, f32, f32),
+    trim: (f32, f32, f32),
+    side: (f32, f32, f32),
+    blade: (f32, f32, f32),
+    lantern: (f32, f32, f32),
+    light: (f32, f32, f32, f32),
+    scenery: (f32, f32, f32, f32),
+    far: String,
+    mid: String,
+    props: String,
 }
 
-fn load(dir: &PathBuf) -> Result<(Tuning, sim::Level), String> {
-    let [t, l] = files(dir);
+const FIRST_LEVEL: &str = "rootway";
+
+fn files(dir: &PathBuf, level: &str) -> [PathBuf; 2] {
+    [dir.join("config/tuning.ron"), dir.join(format!("levels/{level}.ron"))]
+}
+
+fn load(dir: &PathBuf, name: &str) -> Result<(Tuning, sim::Level, Theme), String> {
+    let [t, l] = files(dir, name);
     let read = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let tuning = sim::load_tuning(&read(&t)?).map_err(|e| format!("tuning.ron: {e}"))?;
-    let level = sim::load_level(&read(&l)?).map_err(|e| format!("rootway.ron: {e}"))?;
+    let level = sim::load_level(&read(&l)?).map_err(|e| format!("{name}.ron: {e}"))?;
     if level.spawns.is_empty() {
-        return Err("level has no spawns".into());
+        return Err(format!("{name}.ron has no spawns"));
     }
-    Ok((tuning, level))
+    let look = if level.theme.is_empty() { "cellar" } else { level.theme.as_str() };
+    let theme = ron::from_str(&read(&dir.join(format!("themes/{look}.ron")))?).map_err(|e| format!("themes/{look}.ron: {e}"))?;
+    Ok((tuning, level, theme))
 }
 
-fn stamps(dir: &PathBuf) -> [Option<SystemTime>; 2] {
-    files(dir).map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+fn stamps(dir: &PathBuf, level: &str) -> [Option<SystemTime>; 2] {
+    files(dir, level).map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// Leaves for another level, keeping lives and flowers.
+fn goto_level(game: &mut Game, name: &str) {
+    match load(&game.dir, name) {
+        Ok((tuning, level, theme)) => {
+            game.world.travel(level, &tuning);
+            game.tuning = tuning;
+            game.theme = theme;
+            game.level = name.to_string();
+            game.stamps = stamps(&game.dir, name);
+            game.geo_dirty = true;
+            game.status.clear();
+        }
+        Err(e) => game.status = format!("CANNOT OPEN LEVEL  {e}"),
+    }
 }
 
 fn main() {
     let dir = asset_dir();
-    let (tuning, level) = match load(&dir) {
+    let (tuning, level, theme) = match load(&dir, FIRST_LEVEL) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Cannot start: {e}");
@@ -269,7 +343,9 @@ fn main() {
         tuning,
         input: default(),
         players: 1,
-        stamps: stamps(&dir),
+        level: FIRST_LEVEL.to_string(),
+        theme,
+        stamps: stamps(&dir, FIRST_LEVEL),
         dir,
         status: String::new(),
         geo_dirty: true,
@@ -342,13 +418,13 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         TextLayout::justify(Justify::Center),
         Node { position_type: PositionType::Absolute, top: Val::Percent(22.0), width: Val::Percent(100.0), ..default() },
     ));
-    for (file, factor, z) in [("sprites/bg/far.png", 0.12, -20.0), ("sprites/bg/mid.png", 0.35, -10.0)] {
+    for (file, factor, z, mid) in [("sprites/bg/cellar_far.png", 0.12, -20.0, false), ("sprites/bg/cellar_mid.png", 0.35, -10.0, true)] {
         for cam in 0..2usize {
             for i in 0..6 {
                 let mut sprite = Sprite::from_image(assets.load(file));
                 sprite.custom_size = Some(BG_SIZE);
                 sprite.flip_x = i % 2 == 1;
-                commands.spawn((BgLayer { factor, slot: i as f32 - 2.0, cam }, sprite, Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(cam + 1)));
+                commands.spawn((BgLayer { factor, slot: i as f32 - 2.0, cam, mid }, sprite, Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(cam + 1)));
             }
         }
     }
@@ -367,9 +443,6 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     art.wedge = assets.load("sprites/fx/wedge.png");
     art.leafcap = assets.load("sprites/fx/leafcap.png");
     art.heart = assets.load("sprites/fx/heart.png");
-    for name in ["pot", "lantern", "vine", "stalactite", "sprout", "arch", "curl", "thorn"] {
-        art.props.insert(name, assets.load(format!("sprites/props/{name}.png")));
-    }
     // The bouquet in the corner: a wrap, ten flower slots and a row of hearts.
     let bit = |commands: &mut Commands, kind: u8, i: usize, image: Handle<Image>, size: Vec2| {
         for cam in 0..2usize {
@@ -498,13 +571,17 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
     };
 }
 
-fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>) {
-    if chooser.0 {
+fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>) {
+    // The world holds still in the menu and while a story choice is on screen.
+    if chooser.0 || story.ask.is_some() {
         return;
     }
     let g = &mut *game;
     g.world.step(&g.input, &g.tuning);
     juice.events.extend(g.world.events.drain(..));
+    if let Some(to) = g.world.exit.take() {
+        goto_level(g, &to);
+    }
 }
 
 /// A new world, run for a moment so everyone starts standing on the ground.
@@ -517,10 +594,11 @@ fn settled(level: sim::Level, tuning: &Tuning, players: usize) -> SimWorld {
 }
 
 fn restart(game: &mut Game) {
-    match load(&game.dir) {
-        Ok((tuning, level)) => {
+    match load(&game.dir, &game.level) {
+        Ok((tuning, level, theme)) => {
             game.world = settled(level, &tuning, game.players);
             game.tuning = tuning;
+            game.theme = theme;
             game.geo_dirty = true;
             game.status.clear();
         }
@@ -535,7 +613,7 @@ fn hot_reload(time: Res<Time>, mut acc: Local<f32>, mut game: ResMut<Game>) {
         return;
     }
     *acc = 0.0;
-    let now = stamps(&game.dir);
+    let now = stamps(&game.dir, &game.level);
     if now == game.stamps {
         return;
     }
@@ -544,8 +622,8 @@ fn hot_reload(time: Res<Time>, mut acc: Local<f32>, mut game: ResMut<Game>) {
     if level_changed {
         restart(&mut game);
     } else {
-        match load(&game.dir) {
-            Ok((tuning, _)) => {
+        match load(&game.dir, &game.level) {
+            Ok((tuning, _, _)) => {
                 game.tuning = tuning;
                 game.status.clear();
             }
@@ -559,7 +637,15 @@ fn noise(n: f32) -> f32 {
     ((n * 12.9898).sin() * 43758.547).fract().abs()
 }
 
-fn build_geo(mut commands: Commands, mut game: ResMut<Game>, art: Res<Art>, old: Query<Entity, With<Geo>>) {
+fn build_geo(
+    mut commands: Commands,
+    mut game: ResMut<Game>,
+    art: Res<Art>,
+    assets: Res<AssetServer>,
+    mut clear: ResMut<ClearColor>,
+    old: Query<Entity, With<Geo>>,
+    mut backdrop: Query<(&BgLayer, &mut Sprite), Without<Geo>>,
+) {
     if !game.geo_dirty {
         return;
     }
@@ -567,11 +653,19 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, art: Res<Art>, old:
     for e in &old {
         commands.entity(e).despawn();
     }
-    let rock = Color::srgb(0.045, 0.03, 0.022);
-    let brick = Color::srgb(0.085, 0.056, 0.04);
-    let trim = Color::srgb(0.72, 0.45, 0.17);
-    let side = Color::srgb(0.24, 0.15, 0.08);
-    let blade = Color::srgb(0.3, 0.46, 0.2);
+    // Paint with the level's theme.
+    let theme = game.theme.clone();
+    let rgb = |c: (f32, f32, f32)| Color::srgb(c.0, c.1, c.2);
+    let rgba = |c: (f32, f32, f32, f32)| Color::srgba(c.0, c.1, c.2, c.3);
+    clear.0 = rgb(theme.clear);
+    for (layer, mut sprite) in &mut backdrop {
+        sprite.image = assets.load(if layer.mid { theme.mid.clone() } else { theme.far.clone() });
+    }
+    let rock = rgb(theme.rock);
+    let brick = rgb(theme.brick);
+    let trim = rgb(theme.trim);
+    let side = rgb(theme.side);
+    let blade = rgb(theme.blade);
     let level = &game.world.level;
     let solids = &level.solids;
     let inside = |x: f32, y: f32, skip: usize| solids.iter().enumerate().any(|(j, o)| j != skip && o.contains(x, y));
@@ -628,8 +722,8 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, art: Res<Art>, old:
                     props.push(("vine", mid, bottom - 32.0 * k + 2.0, Vec2::new(22.0, 64.0) * k, 0.35, Color::WHITE));
                 } else if roll < 0.335 && room && s.3 >= 40.0 {
                     // Lantern fruit: brighter than white so it blooms, with a pool of light around it.
-                    props.push(("lantern", mid, bottom - 27.0 + 2.0, Vec2::new(26.0, 54.0), 0.36, Color::srgb(1.7, 1.45, 1.2)));
-                    props.push(("light", mid, bottom - 40.0, Vec2::splat(230.0), 0.12, Color::srgba(1.0, 0.8, 0.5, 0.16)));
+                    props.push(("lantern", mid, bottom - 27.0 + 2.0, Vec2::new(26.0, 54.0), 0.36, rgb(theme.lantern)));
+                    props.push(("light", mid, bottom - 40.0, Vec2::splat(230.0), 0.12, rgba(theme.light)));
                 }
             }
             x += 20.0;
@@ -680,14 +774,20 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, art: Res<Art>, old:
             if noise(n) < 0.75 {
                 let scale = 0.8 + noise(n + 1.0) * 0.6;
                 let (name, size) = if noise(n + 2.0) < 0.5 { ("arch", Vec2::new(200.0, 260.0)) } else { ("curl", Vec2::new(150.0, 300.0)) };
-                props.push((name, x + noise(n + 3.0) * 200.0, row + size.y * scale / 2.0 - 4.0, size * scale, -5.0 - k * 0.001, Color::srgba(1.0, 1.0, 1.0, 0.85)));
+                props.push((name, x + noise(n + 3.0) * 200.0, row + size.y * scale / 2.0 - 4.0, size * scale, -5.0 - k * 0.001, rgba(theme.scenery)));
             }
         }
         x += 560.0;
         k += 1.0;
     }
+    // Doors to other levels: a bright arch standing in a pool of light.
+    for e in &level.exits {
+        let r = e.rect;
+        props.push(("light", r.0 + r.2 / 2.0, r.1 + r.3 / 2.0, Vec2::new(r.2 * 3.0, r.3 * 1.8), 0.42, Color::srgba(1.0, 0.95, 0.8, 0.5)));
+        props.push(("arch", r.0 + r.2 / 2.0, r.1 + r.3 / 2.0, Vec2::new(r.2 * 1.3, r.3), 0.45, Color::srgb(2.2, 2.0, 1.6)));
+    }
     for (name, x, y, size, z, color) in props {
-        let image = if name == "light" { art.light.clone() } else { art.props.get(name).cloned().unwrap_or_default() };
+        let image = if name == "light" { art.light.clone() } else { assets.load(format!("{}/{name}.png", theme.props)) };
         let mut sprite = Sprite::from_image(image);
         sprite.custom_size = Some(size);
         sprite.color = color;
@@ -950,6 +1050,7 @@ fn hud(
     skin: Res<Skin>,
     chooser: Res<Chooser>,
     menu: Res<Menu>,
+    story: Res<Story>,
     show: Res<ShowShapes>,
     pads: Query<(Entity, &Gamepad)>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
@@ -992,6 +1093,9 @@ fn hud(
                     )
                 }
             }
+        } else if let Some((choices, at)) = &story.ask {
+            let row: Vec<String> = choices.iter().enumerate().map(|(i, c)| if i == *at { format!("[ {} ]", c.text) } else { format!("  {}  ", c.text) }).collect();
+            format!("{}\n\nLeft / Right to choose\nA, Space or Enter to confirm", row.join("     "))
         } else if game.world.players.iter().any(|q| q.combo >= 2) {
             format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
         } else {
@@ -1012,11 +1116,51 @@ fn hotkeys(
     mut menu: ResMut<Menu>,
     mut show: ResMut<ShowShapes>,
     mut views: ResMut<Views>,
+    mut story: ResMut<Story>,
     mut held: Local<Vec<Entity>>,
+    mut ask_held: Local<bool>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let pad = |b: GamepadButton| pads.iter().any(|(_, p)| p.just_pressed(b));
+    // A story choice on screen: anyone can move the highlight and confirm.
+    if !chooser.0 {
+        let stick = pads.iter().map(|(_, p)| p.left_stick().x).fold(0.0f32, |a, b| if b.abs() > a.abs() { b } else { a });
+        let flick = stick.abs() > 0.6 && !*ask_held;
+        *ask_held = stick.abs() > 0.4;
+        let left = keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyA) || pad(GamepadButton::DPadLeft) || (flick && stick < 0.0);
+        let right = keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) || pad(GamepadButton::DPadRight) || (flick && stick > 0.0);
+        let ok = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || pad(GamepadButton::South);
+        let mut picked = None;
+        if let Some((choices, at)) = story.ask.as_mut() {
+            if left {
+                *at = at.saturating_sub(1);
+            }
+            if right {
+                *at = (*at + 1).min(choices.len().saturating_sub(1));
+            }
+            if ok {
+                picked = choices.get(*at).cloned();
+            }
+        }
+        if let Some(choice) = picked {
+            story.ask = None;
+            for f in &choice.set {
+                if !story.flags.contains(f) {
+                    story.flags.push(f.clone());
+                }
+            }
+            if !choice.goto.is_empty() {
+                match story.file.scenes.iter().find(|s| s.id == choice.goto).cloned() {
+                    Some(scene) => play_scene(&mut story, &scene),
+                    None => game.status = format!("STORY: no scene called {}", choice.goto),
+                }
+            }
+            if !choice.level.is_empty() {
+                goto_level(&mut game, &choice.level);
+            }
+        }
+    }
     // Tab or the controller's Select / View button opens the start menu.
     if keys.just_pressed(KeyCode::Tab) || pad(GamepadButton::Select) {
         chooser.0 = !chooser.0;
@@ -1502,6 +1646,20 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
+/// Queues a scene: its flags are set, its lines are spoken, then its choice (if any) is asked.
+fn play_scene(story: &mut Story, scene: &Scene) {
+    story.played.push(scene.id.clone());
+    for f in &scene.set {
+        if !story.flags.contains(f) {
+            story.flags.push(f.clone());
+        }
+    }
+    story.queue.extend(scene.lines.iter().cloned().map(Beat::Say));
+    if !scene.choices.is_empty() {
+        story.queue.push_back(Beat::Ask(scene.choices.clone()));
+    }
+}
+
 /// Plays scenes from the story file as speech bubbles over whoever is talking.
 #[allow(clippy::too_many_arguments)]
 fn story(
@@ -1518,15 +1676,28 @@ fn story(
     let dt = time.delta_secs();
     // Load the story, and reload it when the file is saved.
     story.poll -= dt;
+    // Each level has its own story file. Arriving in a new level starts that level's story; flags carry over.
+    if story.level != game.level {
+        story.level = game.level.clone();
+        story.file = StoryFile::default();
+        story.stamp = None;
+        story.poll = 0.0;
+        story.played.clear();
+        story.queue.clear();
+        story.current = None;
+        story.ask = None;
+    }
     if story.poll <= 0.0 {
         story.poll = 0.5;
-        let path = game.dir.join("story/rootway.ron");
+        let path = game.dir.join(format!("story/{}.ron", game.level));
         let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         if stamp != story.stamp {
             story.stamp = stamp;
-            match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| ron::from_str::<StoryFile>(&t).map_err(|e| e.to_string())) {
-                Ok(file) => story.file = file,
-                Err(e) => eprintln!("story/rootway.ron: {e}"),
+            if stamp.is_some() {
+                match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| ron::from_str::<StoryFile>(&t).map_err(|e| e.to_string())) {
+                    Ok(file) => story.file = file,
+                    Err(e) => eprintln!("story/{}.ron: {e}", game.level),
+                }
             }
         }
     }
@@ -1536,6 +1707,7 @@ fn story(
         story.played.clear();
         story.queue.clear();
         story.current = None;
+        story.ask = None;
     }
     story.last_tick = w.tick;
     if !chooser.0 {
@@ -1547,15 +1719,17 @@ fn story(
             let fire = match scene.trigger {
                 Trigger::LevelStart => true,
                 Trigger::Enter(r) => w.players.iter().any(|p| !p.down && r.contains(p.x, p.y)),
+                Trigger::Manual => false,
             };
-            if fire {
-                story.played.push(scene.id.clone());
-                story.queue.extend(scene.lines.iter().cloned());
+            if fire && scene.requires.iter().all(|f| story.flags.contains(f)) {
+                play_scene(&mut story, &scene);
             }
         }
-        if story.current.is_none() {
-            if let Some(line) = story.queue.pop_front() {
-                story.current = Some((line, 0.0));
+        if story.current.is_none() && story.ask.is_none() {
+            match story.queue.pop_front() {
+                Some(Beat::Say(line)) => story.current = Some((line, 0.0)),
+                Some(Beat::Ask(choices)) => story.ask = Some((choices, 0)),
+                None => {}
             }
         }
     }

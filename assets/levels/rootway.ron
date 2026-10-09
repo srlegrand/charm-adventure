@@ -4,6 +4,9 @@
 // Side route: top of the shaft, west along the high shelf to the roof of the start cave.
 (
     name: "The Rootway",
+    theme: "cellar",
+    // No door here: the way on is chosen in the story (see assets/story/rootway.ron).
+    exits: [],
     bounds: (0.0, 0.0, 9400.0, 1900.0),
     spawns: [(200.0, 160.0), (260.0, 160.0)],
     solids: [
