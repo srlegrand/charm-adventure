@@ -1,0 +1,28 @@
+// Speech for The Rootway. Edit and save while the game runs.
+//
+// A scene is a list of lines that play one after another as speech bubbles.
+//   trigger: LevelStart            plays when the level begins
+//            Enter((x, y, w, h))   plays the first time a player walks into that box (level units, Y up)
+//   who:     "simon", "charm" or "louis". If that character is not in the game, the bubble
+//            shows at the top of the screen with their name.
+//   secs:    how long the line stays up. Leave it out and the time is worked out from the length.
+(
+    scenes: [
+        (
+            id: "intro",
+            trigger: LevelStart,
+            lines: [
+                (who: "simon", text: "Baba, there are a lot of tomatoes out there!"),
+                (who: "charm", text: "Ahhh tomatoes, damnit I hate tomatoes!"),
+            ],
+        ),
+        // Example of a place trigger (remove the two slashes on each line to use it):
+        // (
+        //     id: "great_hall",
+        //     trigger: Enter((8320.0, 100.0, 200.0, 400.0)),
+        //     lines: [
+        //         (who: "charm", text: "It is too quiet in here.", secs: 2.5),
+        //     ],
+        // ),
+    ],
+)

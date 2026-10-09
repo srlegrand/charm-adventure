@@ -26,6 +26,57 @@ struct Game {
     geo_dirty: bool,
 }
 
+/// A piece of the corner bouquet: 0 wrap, 1 flower slot, 2 heart.
+#[derive(Component)]
+struct HudBit {
+    kind: u8,
+    i: usize,
+}
+#[derive(Component)]
+struct BubblePart;
+#[derive(Resource)]
+struct StoryUi {
+    root: Entity,
+    bg: Entity,
+    tail: Entity,
+    text: Entity,
+}
+const BUBBLE_TEXT_SCALE: f32 = 0.5;
+
+/// Speech, loaded from assets/story/<level>.ron. This is the data the story editor will write.
+#[derive(Deserialize, Default, Clone)]
+struct StoryFile {
+    scenes: Vec<Scene>,
+}
+#[derive(Deserialize, Clone)]
+struct Scene {
+    id: String,
+    trigger: Trigger,
+    lines: Vec<Line>,
+}
+#[derive(Deserialize, Clone)]
+enum Trigger {
+    LevelStart,
+    Enter(Rect),
+}
+#[derive(Deserialize, Clone)]
+struct Line {
+    who: String,
+    text: String,
+    #[serde(default)]
+    secs: f32,
+}
+#[derive(Resource, Default)]
+struct Story {
+    file: StoryFile,
+    stamp: Option<SystemTime>,
+    poll: f32,
+    played: Vec<String>,
+    queue: std::collections::VecDeque<Line>,
+    current: Option<(Line, f32)>,
+    last_tick: u32,
+}
+
 #[derive(Component)]
 struct Geo;
 #[derive(Component)]
@@ -92,6 +143,11 @@ struct Art {
     enemies: HashMap<String, EnemyArt>,
     slash: Handle<Image>,
     light: Handle<Image>,
+    ring: Handle<Image>,
+    wedge: Handle<Image>,
+    leafcap: Handle<Image>,
+    heart: Handle<Image>,
+    props: HashMap<&'static str, Handle<Image>>,
     flowers: Vec<Handle<Image>>,
 }
 
@@ -191,7 +247,7 @@ fn main() {
             }),
             ..default()
         }))
-        .insert_resource(ClearColor(Color::srgb(0.03, 0.04, 0.09)))
+        .insert_resource(ClearColor(Color::srgb(0.04, 0.027, 0.02)))
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .insert_resource(game)
         .insert_resource(Skin(0))
@@ -199,8 +255,9 @@ fn main() {
         .init_resource::<Art>()
         .init_resource::<ShowShapes>()
         .init_resource::<Juice>()
+        .init_resource::<Story>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, juice, hud, hotkeys, shapes).chain())
+        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -251,6 +308,40 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     };
     art.slash = assets.load("sprites/fx/slash.png");
     art.light = assets.load("sprites/fx/light.png");
+    art.ring = assets.load("sprites/fx/ring.png");
+    art.wedge = assets.load("sprites/fx/wedge.png");
+    art.leafcap = assets.load("sprites/fx/leafcap.png");
+    art.heart = assets.load("sprites/fx/heart.png");
+    for name in ["pot", "lantern", "vine", "stalactite", "sprout", "arch", "curl"] {
+        art.props.insert(name, assets.load(format!("sprites/props/{name}.png")));
+    }
+    // The bouquet in the corner: a wrap, ten flower slots and a row of hearts.
+    let bit = |commands: &mut Commands, kind: u8, i: usize, image: Handle<Image>, size: Vec2| {
+        let mut s = Sprite::from_image(image);
+        s.custom_size = Some(size);
+        commands.spawn((HudBit { kind, i }, s, Transform::from_xyz(0.0, 0.0, 6.0), Visibility::Hidden));
+    };
+    bit(&mut commands, 0, 0, assets.load("sprites/ui/wrap.png"), Vec2::new(24.0, 30.0));
+    for i in 0..10 {
+        bit(&mut commands, 1, i, assets.load(format!("sprites/fx/flower{}.png", i % 6)), Vec2::splat(17.0));
+    }
+    for i in 0..8 {
+        bit(&mut commands, 2, i, art.heart.clone(), Vec2::splat(20.0));
+    }
+    // The speech bubble: one, reused for every line.
+    let font_px = 26.0;
+    let mut bg = Sprite::from_image(assets.load("sprites/ui/bubble.png"));
+    bg.image_mode = SpriteImageMode::Sliced(TextureSlicer { border: BorderRect::all(30.0), ..default() });
+    let bg = commands.spawn((BubblePart, bg, Transform::from_xyz(0.0, 0.0, 0.0))).id();
+    let mut tail = Sprite::from_image(assets.load("sprites/ui/tail.png"));
+    tail.custom_size = Some(Vec2::splat(14.0));
+    let tail = commands.spawn((BubblePart, tail, Transform::from_xyz(0.0, 0.0, 0.01))).id();
+    let text = commands
+        .spawn((BubblePart, Text2d::new(""), TextFont { font_size: bevy::text::FontSize::Px(font_px), ..default() }, TextColor(Color::srgb(0.07, 0.05, 0.06)), TextLayout::justify(Justify::Center), Transform::from_xyz(0.0, 0.0, 0.02).with_scale(Vec3::splat(BUBBLE_TEXT_SCALE))))
+        .id();
+    let root = commands.spawn((BubblePart, Transform::from_xyz(0.0, 0.0, 7.0), Visibility::Hidden)).id();
+    commands.entity(root).add_children(&[bg, tail, text]);
+    commands.insert_resource(StoryUi { root, bg, tail, text });
     art.flowers = (0..6).map(|i| assets.load(format!("sprites/fx/flower{i}.png"))).collect();
     for (kind, e) in &rigs.enemies {
         let size = Vec2::new(e.size.0, e.size.1) * e.units_per_px;
@@ -405,7 +496,7 @@ fn noise(n: f32) -> f32 {
     ((n * 12.9898).sin() * 43758.547).fract().abs()
 }
 
-fn build_geo(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, With<Geo>>) {
+fn build_geo(mut commands: Commands, mut game: ResMut<Game>, art: Res<Art>, old: Query<Entity, With<Geo>>) {
     if !game.geo_dirty {
         return;
     }
@@ -413,44 +504,96 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, 
     for e in &old {
         commands.entity(e).despawn();
     }
-    let rock = Color::srgb(0.025, 0.035, 0.065);
-    let moss = Color::srgb(0.31, 0.82, 0.69);
-    let blade = Color::srgb(0.18, 0.6, 0.52);
-    let solids = &game.world.level.solids;
+    let rock = Color::srgb(0.045, 0.03, 0.022);
+    let brick = Color::srgb(0.085, 0.056, 0.04);
+    let trim = Color::srgb(0.72, 0.45, 0.17);
+    let side = Color::srgb(0.24, 0.15, 0.08);
+    let blade = Color::srgb(0.3, 0.46, 0.2);
+    let level = &game.world.level;
+    let solids = &level.solids;
+    let inside = |x: f32, y: f32, skip: usize| solids.iter().enumerate().any(|(j, o)| j != skip && o.contains(x, y));
+    let near_thorns = |x: f32, y: f32| level.hazards.iter().any(|h| h.overlaps(&Rect::centered(x, y, 40.0, 80.0)));
     let mut bar = |c: Color, x: f32, y: f32, w: f32, h: f32, z: f32, rot: f32| {
         commands.spawn((Geo, Sprite::from_color(c, Vec2::new(w, h)), Transform::from_xyz(x, y, z).with_rotation(Quat::from_rotation_z(rot))));
     };
+    let mut props: Vec<(&str, f32, f32, Vec2, f32, Color)> = Vec::new();
     for (i, s) in solids.iter().enumerate() {
         bar(rock, s.0 + s.2 / 2.0, s.1 + s.3 / 2.0, s.2, s.3, 0.0, 0.0);
-        let top = s.1 + s.3;
+        // Stonework: a scatter of slightly lighter blocks inside the rock.
+        for k in 0..((s.2 * s.3 / 5000.0) as i32).min(160) {
+            let n = s.0 * 0.013 + s.1 * 0.021 + k as f32 * 3.7;
+            let (w, h) = (16.0 + noise(n) * 26.0, 7.0 + noise(n + 1.0) * 8.0);
+            if s.2 > w + 14.0 && s.3 > h + 14.0 {
+                bar(brick, s.0 + 7.0 + w / 2.0 + noise(n + 2.0) * (s.2 - w - 14.0), s.1 + 7.0 + h / 2.0 + noise(n + 3.0) * (s.3 - h - 14.0), w, h, 0.05, 0.0);
+            }
+        }
+        let (top, bottom) = (s.1 + s.3, s.1);
         let mut x = s.0;
         while x < s.0 + s.2 {
             let w = (s.0 + s.2 - x).min(20.0);
             let mid = x + w / 2.0;
-            let buried = solids.iter().enumerate().any(|(j, o)| j != i && o.contains(mid, top + 3.0));
-            if !buried {
-                bar(moss, mid, top - 2.5, w, 5.0, 0.2, 0.0);
-                bar(Color::srgba(0.56, 0.94, 0.85, 0.5), mid, top - 6.5, w, 1.5, 0.2, 0.0);
+            let n = mid * 0.37 + top;
+            if !inside(mid, top + 3.0, i) {
+                // Walkable top: an amber lip, a shadow line under it, grass, and now and then a sprout or a jar.
+                bar(trim, mid, top - 1.5, w, 3.0, 0.2, 0.0);
+                bar(Color::srgba(0.0, 0.0, 0.0, 0.5), mid, top - 5.0, w, 4.0, 0.2, 0.0);
                 for k in 0..2 {
-                    let n = mid * 0.37 + k as f32 * 7.1 + top;
-                    let h = 6.0 + noise(n) * 14.0;
-                    bar(blade, x + noise(n + 1.0) * w, top + h / 2.0 - 1.0, 2.0, h, 0.15, (noise(n + 2.0) - 0.5) * 0.7);
+                    let nk = n + k as f32 * 7.1;
+                    let h = 4.0 + noise(nk) * 11.0;
+                    bar(blade, x + noise(nk + 1.0) * w, top + h / 2.0 - 1.0, 1.6, h, 0.15, (noise(nk + 2.0) - 0.5) * 0.8);
                 }
-            } else {
-                // hanging roots under an overhang are drawn from the rock above, nothing here
+                let roll = noise(n + 11.0);
+                if !near_thorns(mid, top + 20.0) && !inside(mid, top + 40.0, i) {
+                    if roll < 0.07 {
+                        props.push(("sprout", mid, top + 9.0, Vec2::new(16.0, 20.0), 0.45, Color::WHITE));
+                    } else if roll < 0.12 && s.3 >= 60.0 {
+                        let k = 0.8 + noise(n + 12.0) * 0.5;
+                        props.push(("pot", mid, top + 11.0 * k, Vec2::new(22.0, 25.0) * k, 0.4, Color::WHITE));
+                    }
+                }
+            }
+            if !inside(mid, bottom - 3.0, i) && bottom > level.bounds.1 + 30.0 {
+                // Underside: a dim edge, and things that hang.
+                bar(side, mid, bottom + 1.0, w, 2.0, 0.2, 0.0);
+                let roll = noise(n + 21.0);
+                let room = !inside(mid, bottom - 70.0, i);
+                if roll < 0.2 && s.3 >= 40.0 {
+                    let k = 0.6 + noise(n + 22.0) * 0.9;
+                    props.push(("stalactite", mid, bottom - 19.0 * k + 2.0, Vec2::new(20.0, 38.0) * k, 0.3, Color::WHITE));
+                } else if roll < 0.3 && room {
+                    let k = 0.7 + noise(n + 23.0) * 0.7;
+                    props.push(("vine", mid, bottom - 32.0 * k + 2.0, Vec2::new(22.0, 64.0) * k, 0.35, Color::WHITE));
+                } else if roll < 0.335 && room && s.3 >= 40.0 {
+                    // Lantern fruit: brighter than white so it blooms, with a pool of light around it.
+                    props.push(("lantern", mid, bottom - 27.0 + 2.0, Vec2::new(26.0, 54.0), 0.36, Color::srgb(1.7, 1.45, 1.2)));
+                    props.push(("light", mid, bottom - 40.0, Vec2::splat(230.0), 0.12, Color::srgba(1.0, 0.8, 0.5, 0.16)));
+                }
             }
             x += 20.0;
         }
-        // roots under free-floating slabs
+        // Exposed side faces get a dim edge.
+        let mut y = s.1;
+        while y < s.1 + s.3 {
+            let h = (s.1 + s.3 - y).min(20.0);
+            let mid = y + h / 2.0;
+            if !inside(s.0 - 3.0, mid, i) && s.0 > level.bounds.0 + 1.0 {
+                bar(side, s.0 + 1.0, mid, 2.0, h, 0.2, 0.0);
+            }
+            if !inside(s.0 + s.2 + 3.0, mid, i) && s.0 + s.2 < level.bounds.0 + level.bounds.2 - 1.0 {
+                bar(side, s.0 + s.2 - 1.0, mid, 2.0, h, 0.2, 0.0);
+            }
+            y += 20.0;
+        }
+        // Roots under free-floating slabs.
         if s.3 < 60.0 {
-            for k in 0..(s.2 / 60.0) as i32 {
+            for k in 0..(s.2 / 50.0) as i32 {
                 let n = s.0 + k as f32 * 13.3 + s.1;
-                let len = 20.0 + noise(n) * 50.0;
-                bar(rock, s.0 + 20.0 + noise(n + 3.0) * (s.2 - 40.0), s.1 - len / 2.0 + 2.0, 3.0, len, 0.1, (noise(n + 5.0) - 0.5) * 0.3);
+                let len = 16.0 + noise(n) * 44.0;
+                bar(rock, s.0 + 14.0 + noise(n + 3.0) * (s.2 - 28.0), s.1 - len / 2.0 + 2.0, 2.5, len, 0.1, (noise(n + 5.0) - 0.5) * 0.4);
             }
         }
     }
-    for h in &game.world.level.hazards {
+    for h in &level.hazards {
         bar(Color::srgb(0.12, 0.02, 0.05), h.0 + h.2 / 2.0, h.1 + 4.0, h.2, 8.0, 0.3, 0.0);
         let mut x = h.0 + 6.0;
         while x < h.0 + h.2 - 4.0 {
@@ -458,6 +601,30 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, 
             bar(Color::srgb(0.6, 0.12, 0.14), x, h.1 + len / 2.0, 5.0, len, 0.3, (noise(x + 9.0) - 0.5) * 0.6);
             x += 11.0;
         }
+    }
+    // Far scenery standing behind the play space: arches and curling vines, dimmed.
+    let b = level.bounds;
+    let mut x = b.0 + 320.0;
+    let mut k = 0.0;
+    while x < b.0 + b.2 - 200.0 {
+        for row in [100.0, 1150.0] {
+            let n = x * 0.011 + row;
+            if noise(n) < 0.75 {
+                let scale = 0.8 + noise(n + 1.0) * 0.6;
+                let (name, size) = if noise(n + 2.0) < 0.5 { ("arch", Vec2::new(200.0, 260.0)) } else { ("curl", Vec2::new(150.0, 300.0)) };
+                props.push((name, x + noise(n + 3.0) * 200.0, row + size.y * scale / 2.0 - 4.0, size * scale, -5.0 - k * 0.001, Color::srgba(1.0, 1.0, 1.0, 0.85)));
+            }
+        }
+        x += 560.0;
+        k += 1.0;
+    }
+    for (name, x, y, size, z, color) in props {
+        let image = if name == "light" { art.light.clone() } else { art.props.get(name).cloned().unwrap_or_default() };
+        let mut sprite = Sprite::from_image(image);
+        sprite.custom_size = Some(size);
+        sprite.color = color;
+        sprite.flip_x = name != "light" && noise(x * 0.7 + y) < 0.5;
+        commands.spawn((Geo, sprite, Transform::from_xyz(x, y, z)));
     }
 }
 
@@ -686,8 +853,8 @@ fn hud(
         format!("{who} {}/{}{}", q.hp, game.tuning.player.max_hp, if q.down { " DOWN" } else { "" })
     }).collect();
     let line = format!(
-        "{}   Flowers {}{}   Tomatoes {}   {}   {}\n{}",
-        lives.join("   "), juice.shown_score, if juice.pulse > 0.0 { " +" } else { "" }, game.world.enemies.len(), game.world.level.name, pad, game.status
+        "{}   Flowers {}{}   Hearts {}   Tomatoes {}   {}   {}\n{}",
+        lives.join("   "), juice.shown_score, if juice.pulse > 0.0 { " +" } else { "" }, game.world.hearts, game.world.enemies.len(), game.world.level.name, pad, game.status
     );
     if text.0 != line {
         text.0 = line;
@@ -870,7 +1037,7 @@ fn juice(
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 8, 420.0, 22.0, white, dir);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 5, 260.0, 8.0, Color::srgb(0.85, 0.2, 0.18), dir);
             }
-            sim::Event::Give { from, to } => {
+            sim::Event::Give { from, to, heart } => {
                 if let (Some(a0), Some(b0)) = (at(from), at(to)) {
                     let pink = Color::srgb(3.0, 1.2, 1.8);
                     light(&mut commands, b0, 300.0, 0.3, 0.3);
@@ -878,7 +1045,7 @@ fn juice(
                         let life = 0.22 + i as f32 * 0.03;
                         spawn_fx(&mut commands, Sprite::from_color(pink, Vec2::splat(7.0)), a0, 4.5, 0.785, Fx { vel: (b0 - a0) / life, gravity: 0.0, drag: 0.0, life, max: life, spin: 8.0, grow: 0.0 });
                     }
-                    burst(&mut commands, &mut juice, b0, 10, 300.0, 16.0, pink, 0.0);
+                    burst(&mut commands, &mut juice, b0, if heart { 18 } else { 10 }, 300.0, 16.0, pink, 0.0);
                 }
             }
             sim::Event::Down { player } => {
@@ -906,7 +1073,30 @@ fn juice(
                 // a white flash and impact lines,
                 spawn_fx(&mut commands, Sprite::from_color(white, Vec2::splat(size * 1.2)), pos, 3.8, 0.785, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.09, max: 0.09, spin: 6.0, grow: 14.0 });
                 burst(&mut commands, &mut juice, pos, 14, 560.0, 30.0, white, dir * 0.5);
-                // chunks of tomato,
+                // a shockwave ring, wedges of tomato, its leaf cap spinning off,
+                let mut ring = Sprite::from_image(art.ring.clone());
+                ring.custom_size = Some(Vec2::splat(size * 0.8));
+                ring.color = Color::srgb(2.2, 2.0, 1.7);
+                spawn_fx(&mut commands, ring, pos, 3.6, 0.0, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.28, max: 0.28, spin: 0.0, grow: 9.0 });
+                for _ in 0..(4 + size as usize / 12) {
+                    let ang = juice.rand() * std::f32::consts::TAU;
+                    let v = Vec2::from_angle(ang) * (220.0 + juice.rand() * 300.0) + Vec2::new(dir * 220.0, 240.0);
+                    let mut wedge = Sprite::from_image(art.wedge.clone());
+                    wedge.custom_size = Some(Vec2::new(1.0, 0.75) * size * (0.4 + juice.rand() * 0.25));
+                    let life = 0.7 + juice.rand() * 0.4;
+                    spawn_fx(&mut commands, wedge, pos, 3.2, ang, Fx { vel: v, gravity: 1400.0, drag: 0.8, life, max: life, spin: (juice.rand() - 0.5) * 24.0, grow: -0.3 });
+                }
+                let mut cap = Sprite::from_image(art.leafcap.clone());
+                cap.custom_size = Some(Vec2::new(1.0, 0.66) * size * 0.8);
+                spawn_fx(&mut commands, cap, pos + Vec2::Y * size * 0.4, 3.3, 0.0, Fx { vel: Vec2::new(dir * 120.0 + (juice.rand() - 0.5) * 160.0, 520.0), gravity: 1300.0, drag: 0.6, life: 1.0, max: 1.0, spin: 14.0, grow: 0.0 });
+                // seeds,
+                for _ in 0..10 {
+                    let ang = juice.rand() * std::f32::consts::TAU;
+                    let v = Vec2::from_angle(ang) * (200.0 + juice.rand() * 420.0) + Vec2::Y * 200.0;
+                    let life = 0.5 + juice.rand() * 0.4;
+                    spawn_fx(&mut commands, Sprite::from_color(Color::srgb(1.6, 1.5, 1.2), Vec2::new(4.0, 2.2)), pos, 3.1, ang, Fx { vel: v, gravity: 1200.0, drag: 1.0, life, max: life, spin: 20.0, grow: 0.0 });
+                }
+                // smaller chunks,
                 for i in 0..(10 + size as usize / 4) {
                     let ang = juice.rand() * std::f32::consts::TAU;
                     let v = Vec2::from_angle(ang) * (140.0 + juice.rand() * 320.0) + Vec2::new(dir * 180.0, 160.0);
@@ -968,7 +1158,8 @@ fn juice(
     juice.pulse = (juice.pulse - dt).max(0.0);
     if let (Ok(cam), Ok(win)) = (cam.single(), window.single()) {
         let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
-        let goal = cam.translation.truncate() + Vec2::new(-half.x + 96.0, half.y - 14.0);
+        let goal = cam.translation.truncate() + Vec2::new(-half.x + 50.0, half.y - 56.0);
+        let mut made_heart = false;
         for (e, mut f, mut tf) in &mut flowers {
             f.age += dt;
             let pos = tf.translation.truncate();
@@ -981,6 +1172,7 @@ fn juice(
                     commands.entity(e).despawn();
                     juice.shown_score += 1;
                     juice.pulse = 0.15;
+                    made_heart |= juice.shown_score % 10 == 0;
                     continue;
                 }
                 let speed = (300.0 + (f.age - f.delay) * 2600.0).min(1800.0);
@@ -989,10 +1181,201 @@ fn juice(
             tf.translation += (f.vel * dt).extend(0.0);
             tf.rotate_z(5.0 * dt);
         }
+        if made_heart {
+            // Ten flowers: the bouquet bursts into a heart.
+            let pink = Color::srgb(3.0, 1.2, 1.8);
+            light(&mut commands, goal, 260.0, 0.4, 0.35);
+            burst(&mut commands, &mut juice, goal, 14, 260.0, 14.0, pink, 0.0);
+            juice.pulse = 0.4;
+        }
     }
     // Keep the shown score honest after a restart or if a flower was lost.
-    let real = w.players.iter().map(|p| p.score).sum::<u32>();
+    let real = w.flowers;
     if flowers.is_empty() && juice.shown_score != real {
         juice.shown_score = real;
+    }
+}
+
+/// The bouquet in the top-left corner: one flower per flower collected, bursting into a heart at ten.
+fn bouquet(
+    game: Res<Game>,
+    juice: Res<Juice>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    cam: Query<&Transform, (With<Camera2d>, Without<HudBit>)>,
+    mut bits: Query<(&HudBit, &mut Transform, &mut Visibility)>,
+) {
+    let (Ok(cam), Ok(win)) = (cam.single(), window.single()) else { return };
+    let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
+    let base = cam.translation.truncate() + Vec2::new(-half.x + 50.0, half.y - 88.0);
+    let held = (juice.shown_score % 10) as usize;
+    let hearts = game.world.hearts as usize;
+    for (bit, mut tf, mut vis) in &mut bits {
+        let (show, pos, pop) = match bit.kind {
+            0 => (true, base, false),
+            1 => {
+                // Slots fill from the middle outward, so the bunch grows evenly.
+                let step = ((bit.i + 1) / 2) as f32 * if bit.i % 2 == 0 { 1.0 } else { -1.0 };
+                let a = (step * 13.0f32).to_radians();
+                let r = 12.0 + (bit.i % 3) as f32 * 7.0;
+                (bit.i < held, base + Vec2::new(a.sin() * r, 14.0 + a.cos() * r), bit.i + 1 == held)
+            }
+            _ => (bit.i < hearts, base + Vec2::new(60.0 + bit.i as f32 * 23.0, 8.0), bit.i + 1 == hearts && juice.pulse > 0.15),
+        };
+        *vis = if show { Visibility::Visible } else { Visibility::Hidden };
+        tf.translation = pos.extend(6.0 + bit.kind as f32 * 0.01);
+        tf.scale = Vec3::splat(if pop { 1.0 + juice.pulse * 3.0 } else { 1.0 });
+    }
+}
+
+/// Breaks a line of speech into rows short enough for a bubble.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    for word in text.split_whitespace() {
+        let last = rows.last_mut().unwrap();
+        if !last.is_empty() && last.chars().count() + 1 + word.chars().count() > width {
+            rows.push(word.to_string());
+        } else {
+            if !last.is_empty() {
+                last.push(' ');
+            }
+            last.push_str(word);
+        }
+    }
+    rows
+}
+
+/// Plays scenes from the story file as speech bubbles over whoever is talking.
+#[allow(clippy::too_many_arguments)]
+fn story(
+    game: Res<Game>,
+    skin: Res<Skin>,
+    chooser: Res<Chooser>,
+    time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
+    ui: Res<StoryUi>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    cam: Query<&Transform, (With<Camera2d>, Without<BubblePart>)>,
+    mut story: ResMut<Story>,
+    mut parts: Query<(&mut Transform, Option<&mut Sprite>, Option<&mut Text2d>, Option<&mut Visibility>), With<BubblePart>>,
+) {
+    let dt = time.delta_secs();
+    // Load the story, and reload it when the file is saved.
+    story.poll -= dt;
+    if story.poll <= 0.0 {
+        story.poll = 0.5;
+        let path = game.dir.join("story/rootway.ron");
+        let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if stamp != story.stamp {
+            story.stamp = stamp;
+            match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| ron::from_str::<StoryFile>(&t).map_err(|e| e.to_string())) {
+                Ok(file) => story.file = file,
+                Err(e) => eprintln!("story/rootway.ron: {e}"),
+            }
+        }
+    }
+    let w = &game.world;
+    // A restarted level tells its story again.
+    if w.tick < story.last_tick {
+        story.played.clear();
+        story.queue.clear();
+        story.current = None;
+    }
+    story.last_tick = w.tick;
+    if !chooser.0 {
+        let scenes = story.file.scenes.clone();
+        for scene in scenes {
+            if story.played.contains(&scene.id) {
+                continue;
+            }
+            let fire = match scene.trigger {
+                Trigger::LevelStart => true,
+                Trigger::Enter(r) => w.players.iter().any(|p| !p.down && r.contains(p.x, p.y)),
+            };
+            if fire {
+                story.played.push(scene.id.clone());
+                story.queue.extend(scene.lines.iter().cloned());
+            }
+        }
+        if story.current.is_none() {
+            if let Some(line) = story.queue.pop_front() {
+                story.current = Some((line, 0.0));
+            }
+        }
+    }
+    let mut done = false;
+    let mut show = None;
+    if let Some((line, age)) = story.current.as_mut() {
+        if !chooser.0 {
+            *age += dt;
+        }
+        let secs = if line.secs > 0.0 { line.secs } else { 1.4 + line.text.chars().count() as f32 * 0.06 };
+        done = *age > secs;
+        show = Some((line.clone(), *age));
+    }
+    if done {
+        story.current = None;
+    }
+    let (Ok(cam), Ok(win)) = (cam.single(), window.single()) else { return };
+    let Some((line, age)) = show.filter(|_| !done) else {
+        if let Ok((_, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    };
+    // Who is talking, and are they in the game?
+    let who = match line.who.to_lowercase().as_str() {
+        "simon" => Some(0),
+        "charm" => Some(1),
+        _ => None,
+    };
+    let a = fixed.overstep_fraction();
+    let speaker = who.map(|c| (c + 2 - skin.0) % 2).and_then(|i| w.players.get(i)).filter(|p| !p.down).map(|p| Vec2::new(p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a));
+    let full = if speaker.is_some() { line.text.clone() } else { format!("{}: {}", line.who.to_uppercase(), line.text) };
+    let rows = wrap(&full, 20);
+    let widest = rows.iter().map(|r| r.chars().count()).max().unwrap_or(1) as f32;
+    let font_px = 26.0;
+    let size = Vec2::new(widest * font_px * 0.6 * BUBBLE_TEXT_SCALE + 18.0, rows.len() as f32 * font_px * 1.2 * BUBBLE_TEXT_SCALE + 13.0);
+    // Letters appear quickly, one after another.
+    let mut left = (age * 45.0) as usize;
+    let typed: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            let take = left.min(r.chars().count());
+            left -= take;
+            let mut s: String = r.chars().take(take).collect();
+            s.extend(std::iter::repeat(' ').take(r.chars().count() - take));
+            s
+        })
+        .collect();
+    let half = Vec2::new(VIEW_H / 2.0 * win.width() / win.height().max(1.0), VIEW_H / 2.0);
+    let centre = cam.translation.truncate();
+    let head = game.tuning.player.height / 2.0 + 24.0;
+    let mut pos = match speaker {
+        Some(p) => p + Vec2::new(0.0, head + 8.0 + size.y / 2.0),
+        None => centre + Vec2::new(0.0, half.y - 70.0 - size.y / 2.0),
+    };
+    let anchor_x = speaker.map(|p| p.x).unwrap_or(pos.x);
+    pos.x = pos.x.clamp(centre.x - half.x + size.x / 2.0 + 6.0, centre.x + half.x - size.x / 2.0 - 6.0);
+    pos.y = pos.y.min(centre.y + half.y - size.y / 2.0 - 6.0);
+    let pop = (age * 9.0).min(1.0);
+    if let Ok((mut tf, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
+        tf.translation = pos.extend(7.0);
+        tf.scale = Vec3::splat(0.6 + 0.4 * pop * (2.0 - pop));
+        *vis = Visibility::Visible;
+    }
+    if let Ok((_, Some(mut sprite), _, _)) = parts.get_mut(ui.bg) {
+        sprite.custom_size = Some(size);
+    }
+    if let Ok((mut tf, _, _, vis)) = parts.get_mut(ui.tail) {
+        let dx = (anchor_x - pos.x).clamp(-size.x / 2.0 + 12.0, size.x / 2.0 - 12.0);
+        tf.translation = Vec3::new(dx, -size.y / 2.0 - 4.0, 0.01);
+        tf.scale = Vec3::splat(if speaker.is_some() { 1.0 } else { 0.0 });
+        let _ = vis;
+    }
+    if let Ok((_, _, Some(mut text), _)) = parts.get_mut(ui.text) {
+        let want = typed.join("\n");
+        if text.0 != want {
+            text.0 = want;
+        }
     }
 }

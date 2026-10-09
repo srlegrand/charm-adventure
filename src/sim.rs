@@ -217,7 +217,7 @@ pub enum Event {
     Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32, combo: u32 },
     Hurt { x: f32, y: f32 },
     /// A life passed from one player to the other.
-    Give { from: usize, to: usize },
+    Give { from: usize, to: usize, heart: bool },
     Down { player: usize },
 }
 
@@ -229,6 +229,10 @@ pub struct World {
     pub tick: u32,
     /// Ticks left of the freeze that follows a hit.
     pub hitstop: u32,
+    /// Flowers collected by the team. Every ten make a heart.
+    pub flowers: u32,
+    /// Spare hearts the team holds. A heart is one life, for whoever it is passed to.
+    pub hearts: u32,
     pub events: Vec<Event>,
 }
 
@@ -401,7 +405,7 @@ impl World {
                 })
             })
             .collect();
-        World { level, players, enemies, tick: 0, hitstop: 0, events: Vec::new() }
+        World { level, players, enemies, tick: 0, hitstop: 0, flowers: 0, hearts: 0, events: Vec::new() }
     }
 
     pub fn step(&mut self, inputs: &[Input], tuning: &Tuning) {
@@ -427,38 +431,50 @@ impl World {
             return;
         }
         self.tick += 1;
-        // Passing a life: costs the giver one, heals the partner one, and gets a downed partner back up.
-        if self.players.len() == 2 {
-            for from in 0..2 {
-                let to = 1 - from;
-                let inp = inputs.get(from).copied().unwrap_or_default();
-                let pressed = inp.give && !self.players[from].prev.give;
-                let (giver, taker) = (&self.players[from], &self.players[to]);
-                if pressed && !giver.down && giver.hp > 1 && (taker.down || taker.hp < t.max_hp) {
-                    let (gx, gy, face) = (giver.x, giver.y, giver.facing);
-                    self.players[from].hp -= 1;
-                    let p = &mut self.players[to];
-                    if p.down {
-                        let score = p.score;
-                        *p = Player::new(gx, gy, t);
-                        p.score = score;
-                        p.hp = 1;
-                        p.facing = face;
-                        p.invuln = t.invuln_time * 2.0;
-                    } else {
-                        p.hp += 1;
-                    }
-                    self.events.push(Event::Give { from, to });
-                }
+        // The give button. With a spare heart: it goes to the partner if they need it, otherwise to yourself.
+        // With no hearts, in a two-player game, you pass one of your own lives across.
+        let count = self.players.len();
+        for from in 0..count {
+            let inp = inputs.get(from).copied().unwrap_or_default();
+            if !(inp.give && !self.players[from].prev.give) || self.players[from].down {
+                continue;
             }
-            // Both down: everyone gets back up at the start.
-            if self.players.iter().all(|p| p.down) {
-                for (i, p) in self.players.iter_mut().enumerate() {
-                    let s = self.level.spawns[i % self.level.spawns.len()];
-                    let score = p.score;
-                    *p = Player::new(s.0, s.1, t);
-                    p.score = score;
-                }
+            let other = if count == 2 { Some(1 - from) } else { None };
+            let needs = |p: &Player| p.down || p.hp < t.max_hp;
+            let to = match other {
+                Some(o) if needs(&self.players[o]) => o,
+                _ if self.hearts > 0 && needs(&self.players[from]) => from,
+                _ => continue,
+            };
+            let heart = self.hearts > 0;
+            if heart {
+                self.hearts -= 1;
+            } else if to != from && self.players[from].hp > 1 {
+                self.players[from].hp -= 1;
+            } else {
+                continue;
+            }
+            let (gx, gy, face) = (self.players[from].x, self.players[from].y, self.players[from].facing);
+            let p = &mut self.players[to];
+            if p.down {
+                let score = p.score;
+                *p = Player::new(gx, gy, t);
+                p.score = score;
+                p.hp = 1;
+                p.facing = face;
+                p.invuln = t.invuln_time * 2.0;
+            } else {
+                p.hp += 1;
+            }
+            self.events.push(Event::Give { from, to, heart });
+        }
+        // Both down: everyone gets back up at the start.
+        if count == 2 && self.players.iter().all(|p| p.down) {
+            for (i, p) in self.players.iter_mut().enumerate() {
+                let s = self.level.spawns[i % self.level.spawns.len()];
+                let score = p.score;
+                *p = Player::new(s.0, s.1, t);
+                p.score = score;
             }
         }
         let solo = self.players.len() < 2;
@@ -706,6 +722,8 @@ impl World {
                         // Each link in the chain is worth one more flower, up to five extra.
                         let flowers = et.flowers + (p.combo - 1).min(5);
                         p.score += flowers;
+                        self.hearts += (self.flowers + flowers) / 10 - self.flowers / 10;
+                        self.flowers += flowers;
                         self.hitstop = self.hitstop.max(t.hitstop_kill);
                         self.events.push(Event::Kill { x: body.x, y: body.y, kind: e.kind.clone(), flowers, dir, combo: p.combo });
                     } else {
@@ -923,5 +941,10 @@ mod tests {
         w.step(&[none, none], &tuning);
         w.step(&[give, none], &tuning);
         assert_eq!((w.players[0].hp, w.players[1].hp), (1, 1));
+        // A spare heart is spent before your own lives.
+        w.hearts = 1;
+        w.step(&[none, none], &tuning);
+        w.step(&[give, none], &tuning);
+        assert_eq!((w.players[0].hp, w.players[1].hp, w.hearts), (1, 2, 0));
     }
 }

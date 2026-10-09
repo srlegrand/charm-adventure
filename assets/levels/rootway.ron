@@ -1,15 +1,16 @@
 // The Rootway. Rects are (x, y, width, height) from the bottom-left, Y up.
-// Route: start cave -> thorn pit -> great cavern -> shaft climb -> east descent -> arena.
+// Route: start cave -> thorn pit -> great cavern -> shaft climb -> east descent -> arena
+//        -> thorn gallery -> the step -> tomato run -> the great hall.
 // Side route: top of the shaft, west along the high shelf to the roof of the start cave.
 (
     name: "The Rootway",
-    bounds: (0.0, 0.0, 5200.0, 1900.0),
+    bounds: (0.0, 0.0, 9400.0, 1900.0),
     spawns: [(200.0, 160.0), (260.0, 160.0)],
     solids: [
         // shell
         (0.0, 0.0, 60.0, 1900.0),
-        (5140.0, 0.0, 60.0, 1900.0),
-        (0.0, 1840.0, 5200.0, 60.0),
+        (9340.0, 0.0, 60.0, 1900.0),
+        (0.0, 1840.0, 9400.0, 60.0),
         // start cave: floor, terrace, roof mass
         (0.0, 0.0, 1300.0, 100.0),
         (500.0, 100.0, 200.0, 40.0),
@@ -53,12 +54,37 @@
         (4850.0, 300.0, 160.0, 24.0),
         (4430.0, 560.0, 140.0, 24.0),
         (4700.0, 700.0, 440.0, 40.0),
+        // floor for everything east of the arena
+        (5200.0, 0.0, 4200.0, 100.0),
+        // thorn gallery: low roof, stepping stones over thorn beds
+        (5300.0, 620.0, 900.0, 1220.0),
+        (5380.0, 230.0, 90.0, 22.0),
+        (5560.0, 300.0, 90.0, 22.0),
+        (5800.0, 260.0, 80.0, 22.0),
+        (5960.0, 340.0, 80.0, 22.0),
+        (6100.0, 240.0, 90.0, 22.0),
+        // the step: a climb, then a drop onto a ledge
+        (6200.0, 250.0, 100.0, 22.0),
+        (6300.0, 100.0, 260.0, 300.0),
+        (6560.0, 100.0, 500.0, 220.0),
+        (6700.0, 520.0, 160.0, 22.0),
+        // tomato run: a long low corridor
+        (7060.0, 430.0, 1240.0, 1410.0),
+        // the great hall
+        (8480.0, 300.0, 160.0, 24.0),
+        (8760.0, 440.0, 220.0, 24.0),
+        (9080.0, 300.0, 160.0, 24.0),
+        (8620.0, 620.0, 140.0, 24.0),
+        (8980.0, 620.0, 140.0, 24.0),
     ],
     hazards: [
         (1300.0, 20.0, 260.0, 30.0),
         (3420.0, 660.0, 120.0, 26.0),
         (2200.0, 100.0, 100.0, 26.0),
         (4100.0, 100.0, 120.0, 26.0),
+        (5400.0, 100.0, 220.0, 26.0),
+        (5760.0, 100.0, 300.0, 26.0),
+        (6130.0, 100.0, 170.0, 26.0),
     ],
     enemies: [
         (kind: "cherry", x: 900.0, y: 206.0),
@@ -77,5 +103,30 @@
         (kind: "beefsteak", x: 4600.0, y: 126.0),
         (kind: "cherry", x: 4900.0, y: 116.0),
         (kind: "cherry", x: 4900.0, y: 756.0),
+        (kind: "cherry", x: 5420.0, y: 260.0),
+        (kind: "cherry", x: 5600.0, y: 330.0),
+        (kind: "hopper", x: 5980.0, y: 380.0),
+        (kind: "cherry", x: 6140.0, y: 270.0),
+        (kind: "hopper", x: 6420.0, y: 430.0),
+        (kind: "cherry", x: 6700.0, y: 340.0),
+        (kind: "cherry", x: 6900.0, y: 340.0),
+        (kind: "hopper", x: 6780.0, y: 560.0),
+        (kind: "cherry", x: 7200.0, y: 120.0),
+        (kind: "cherry", x: 7300.0, y: 120.0),
+        (kind: "cherry", x: 7400.0, y: 120.0),
+        (kind: "cherry", x: 7500.0, y: 120.0),
+        (kind: "cherry", x: 7600.0, y: 120.0),
+        (kind: "cherry", x: 7700.0, y: 120.0),
+        (kind: "cherry", x: 7800.0, y: 120.0),
+        (kind: "cherry", x: 7900.0, y: 120.0),
+        (kind: "cherry", x: 8000.0, y: 120.0),
+        (kind: "cherry", x: 8100.0, y: 120.0),
+        (kind: "hopper", x: 7650.0, y: 124.0),
+        (kind: "hopper", x: 8150.0, y: 124.0),
+        (kind: "beefsteak", x: 8560.0, y: 130.0),
+        (kind: "beefsteak", x: 9150.0, y: 130.0),
+        (kind: "cherry", x: 8860.0, y: 470.0),
+        (kind: "hopper", x: 8690.0, y: 650.0),
+        (kind: "hopper", x: 9050.0, y: 650.0),
     ],
 )
