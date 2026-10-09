@@ -311,7 +311,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let fullscreen = std::env::args().any(|a| a == "--fullscreen") || std::env::var("SteamDeck").is_ok_and(|v| v == "1");
+    // Full screen, borderless, on the primary monitor. --windowed keeps it in a window.
+    let fullscreen = !std::env::args().any(|a| a == "--windowed");
     let game = Game {
         world: settled(level, &tuning, 1),
         tuning,
@@ -329,7 +330,7 @@ fn main() {
             primary_window: Some(Window {
                 title: "Charm Adventure in Tomato Land".into(),
                 resolution: (1280u32, 800u32).into(),
-                mode: if fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed },
+                mode: if fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Primary) } else { WindowMode::Windowed },
                 ..default()
             }),
             ..default()
@@ -349,7 +350,7 @@ fn main() {
         .init_resource::<GeoStore>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
         .add_systems(Startup, setup)
-        .add_systems(Update, (read_input, hot_reload, build_geo, animate, boss, draw_enemies, camera, stream_geo, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
+        .add_systems(Update, (read_input, hot_reload, build_geo, animate, boss, draw_enemies, camera, msaa_mode, stream_geo, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
         .add_systems(FixedUpdate, tick)
         .add_systems(First, frame_begin)
         .add_systems(Last, frame_end)
@@ -822,6 +823,17 @@ fn build_geo(
         let wide = sprite.custom_size.map(|s| s.x.max(s.y)).unwrap_or(0.0) > GEO_CHUNK;
         let key = if wide { i32::MIN } else { (tf.translation.x / GEO_CHUNK).floor() as i32 };
         store.chunks.entry(key).or_default().push((sprite, tf));
+    }
+}
+
+/// One view: no anti-aliasing, which flat sprites do not need and which costs every pixel several times over.
+/// Split screen: the two views only share one picture correctly with it on, so it comes back for that mode alone.
+fn msaa_mode(views: Res<Views>, mut cams: Query<&mut Msaa, With<Camera>>) {
+    let want = if views.split { Msaa::Sample4 } else { Msaa::Off };
+    for mut m in &mut cams {
+        if *m != want {
+            *m = want;
+        }
     }
 }
 
@@ -1366,6 +1378,7 @@ fn hotkeys(
                         Device::Keyboard => pad_list.first().map(|e| Device::Pad(*e)),
                         Device::Pad(mine) => Some(pad_list.iter().find(|e| **e != mine).map(|e| Device::Pad(*e)).unwrap_or(Device::Keyboard)),
                     };
+                    let other = if std::env::var("CHARM_TEST_SPLIT").is_ok() { Some(Device::Keyboard) } else { other };
                     match (game.players, other) {
                         (2, None) => menu.note = "Two players need two controllers.".into(),
                         (_, other) => {
@@ -1413,7 +1426,7 @@ fn hotkeys(
     if keys.just_pressed(KeyCode::F11) || fullscreen {
         if let Ok(mut w) = window.single_mut() {
             w.mode = match w.mode {
-                WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+                WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
                 _ => WindowMode::Windowed,
             };
         }

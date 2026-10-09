@@ -43,6 +43,8 @@ cd charm-adventure && ./charm_adventure
 
 Keep the `assets` folder next to the game; it will not start without it.
 
+The game opens full screen on the primary monitor. Start it with `--windowed` to keep it in a window.
+
 ## Controls
 
 | Action | Controller | Keyboard and mouse |
