@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Charm Adventure in Tomato Land - movement slice.
 mod sim;
 
@@ -350,7 +351,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     art.wedge = assets.load("sprites/fx/wedge.png");
     art.leafcap = assets.load("sprites/fx/leafcap.png");
     art.heart = assets.load("sprites/fx/heart.png");
-    for name in ["pot", "lantern", "vine", "stalactite", "sprout", "arch", "curl"] {
+    for name in ["pot", "lantern", "vine", "stalactite", "sprout", "arch", "curl", "thorn"] {
         art.props.insert(name, assets.load(format!("sprites/props/{name}.png")));
     }
     // The bouquet in the corner: a wrap, ten flower slots and a row of hearts.
@@ -633,13 +634,18 @@ fn build_geo(mut commands: Commands, mut game: ResMut<Game>, art: Res<Art>, old:
             }
         }
     }
+    // Thorns: tall crimson spikes with pale tips, brighter than white so they glow, over a red pool of light.
     for h in &level.hazards {
-        bar(Color::srgb(0.12, 0.02, 0.05), h.0 + h.2 / 2.0, h.1 + 4.0, h.2, 8.0, 0.3, 0.0);
-        let mut x = h.0 + 6.0;
-        while x < h.0 + h.2 - 4.0 {
-            let len = h.3 + 6.0 + noise(x) * 16.0;
-            bar(Color::srgb(0.6, 0.12, 0.14), x, h.1 + len / 2.0, 5.0, len, 0.3, (noise(x + 9.0) - 0.5) * 0.6);
-            x += 11.0;
+        bar(Color::srgb(0.1, 0.0, 0.02), h.0 + h.2 / 2.0, h.1 + 3.0, h.2 + 8.0, 8.0, 0.55, 0.0);
+        props.push(("light", h.0 + h.2 / 2.0, h.1 + 10.0, Vec2::new(h.2 * 1.9 + 120.0, 170.0), 0.5, Color::srgba(1.0, 0.12, 0.1, 0.5)));
+        let mut x = h.0 + 8.0;
+        let mut k = 0.0;
+        while x < h.0 + h.2 - 6.0 {
+            let tall = h.3 + 16.0 + noise(x) * 22.0;
+            let wide = 20.0 + noise(x + 4.0) * 8.0;
+            props.push(("thorn", x, h.1 + tall / 2.0 - 2.0, Vec2::new(wide, tall), 0.6 + k * 0.001, Color::srgb(1.7, 1.25, 1.2)));
+            x += 13.0 + noise(x + 7.0) * 5.0;
+            k += 1.0;
         }
     }
     // Far scenery standing behind the play space: arches and curling vines, dimmed.

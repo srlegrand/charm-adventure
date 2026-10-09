@@ -12,36 +12,88 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  linux:
-    runs-on: ubuntu-22.04
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-22.04
+          - name: windows
+            os: windows-latest
+          - name: mac
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install build libraries
+      - name: Install build libraries (Linux)
+        if: matrix.name == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'mac' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
       - name: Test
+        if: matrix.name == 'linux'
         run: cargo test --release
-      - name: Build
-        run: cargo build --release
-      - name: Package
+
+      - name: Build (Linux)
+        if: matrix.name == 'linux'
         run: |
+          cargo build --release
           mkdir -p dist/charm-adventure
           cp target/release/charm_adventure dist/charm-adventure/
           cp -r assets dist/charm-adventure/
-          tar -C dist -czf charm-adventure-steamdeck.tar.gz charm-adventure
+          tar -C dist -czf charm-adventure-linux.tar.gz charm-adventure
+
+      - name: Build (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force dist/charm-adventure | Out-Null
+          Copy-Item target/release/charm_adventure.exe dist/charm-adventure/
+          Copy-Item -Recurse assets dist/charm-adventure/
+          Compress-Archive -Path dist/charm-adventure -DestinationPath charm-adventure-windows.zip
+
+      - name: Build (Mac, Intel and Apple Silicon in one file)
+        if: matrix.name == 'mac'
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          mkdir -p dist/charm-adventure
+          lipo -create -output dist/charm-adventure/charm_adventure \
+            target/x86_64-apple-darwin/release/charm_adventure \
+            target/aarch64-apple-darwin/release/charm_adventure
+          cp -r assets dist/charm-adventure/
+          cd dist && zip -qr ../charm-adventure-mac.zip charm-adventure
+
       - uses: actions/upload-artifact@v4
         with:
-          name: charm-adventure-steamdeck
-          path: charm-adventure-steamdeck.tar.gz
+          name: charm-adventure-${{ matrix.name }}
+          path: |
+            charm-adventure-linux.tar.gz
+            charm-adventure-windows.zip
+            charm-adventure-mac.zip
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
       - name: Release
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v0.1.${{ github.run_number }}" charm-adventure-steamdeck.tar.gz \
+          gh release create "v0.1.${{ github.run_number }}" out/* \
+            --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "Build ${{ github.run_number }}" \
             --generate-notes --latest
