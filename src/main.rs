@@ -28,7 +28,8 @@ struct Game {
     geo_dirty: bool,
 }
 
-/// A piece of the corner bouquet: 0 wrap, 1 flower slot, 2 heart.
+/// A piece of a player's corner display: 0 bouquet wrap, 1 flower slot, 2 heart ready to send,
+/// 3 life, 5 Simon's face, 6 Charm's face.
 #[derive(Component)]
 struct HudBit {
     kind: u8,
@@ -326,7 +327,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         Hud,
         Text::new(""),
         TextColor(Color::srgb(0.91, 0.89, 0.84)),
-        Node { position_type: PositionType::Absolute, top: Val::Px(10.0), left: Val::Px(14.0), ..default() },
+        Node { position_type: PositionType::Absolute, bottom: Val::Px(10.0), left: Val::Px(14.0), ..default() },
     ));
     commands.spawn((
         Divider,
@@ -382,7 +383,17 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         bit(&mut commands, 1, i, assets.load(format!("sprites/fx/flower{}.png", i % 6)), Vec2::splat(17.0));
     }
     for i in 0..8 {
-        bit(&mut commands, 2, i, art.heart.clone(), Vec2::splat(20.0));
+        bit(&mut commands, 2, i, art.heart.clone(), Vec2::splat(15.0));
+        bit(&mut commands, 3, i, art.heart.clone(), Vec2::splat(19.0));
+    }
+    // Faces, cut from each character's head art.
+    for (kind, name) in [(5u8, "simon"), (6u8, "charm")] {
+        for cam in 0..2usize {
+            let mut s = Sprite::from_image(assets.load(format!("sprites/{name}/head.png")));
+            s.rect = Some(bevy::math::Rect::new(78.0, 8.0, 162.0, 92.0));
+            s.custom_size = Some(Vec2::splat(40.0));
+            commands.spawn((HudBit { kind, i: 0, cam }, s, Transform::from_xyz(0.0, 0.0, 6.0), Visibility::Hidden, RenderLayers::layer(cam + 1)));
+        }
     }
     // The speech bubble: one, reused for every line.
     let font_px = 26.0;
@@ -920,6 +931,7 @@ fn hud(
     skin: Res<Skin>,
     chooser: Res<Chooser>,
     menu: Res<Menu>,
+    show: Res<ShowShapes>,
     pads: Query<(Entity, &Gamepad)>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
@@ -930,14 +942,12 @@ fn hud(
         0 => "no controller".to_string(),
         n => format!("{n} controller{}", if n == 1 { "" } else { "s" }),
     };
-    let lives: Vec<String> = game.world.players.iter().enumerate().map(|(i, q)| {
-        let who = if (skin.0 + i) % 2 == 0 { "SIMON" } else { "CHARM" };
-        format!("{who} {}/{}{}  flowers {}", q.hp, game.tuning.player.max_hp, if q.down { " DOWN" } else { "" }, q.flowers)
-    }).collect();
-    let line = format!(
-        "{}   Tomatoes {}   {}   {}\n{}",
-        lives.join("     "), game.world.enemies.len(), game.world.level.name, pad, game.status
-    );
+    // The top line is only for trouble (a file that failed to load) and, with F3, a line of details.
+    let line = if show.0 {
+        format!("Tomatoes {}   {}   {}\n{}", game.world.enemies.len(), game.world.level.name, pad, game.status)
+    } else {
+        game.status.clone()
+    };
     if text.0 != line {
         text.0 = line;
     }
@@ -1343,39 +1353,49 @@ fn juice(
     }
 }
 
-/// Where a player's bouquet sits. Split screen: top-left of their own half.
-/// One shared view: player 1 top-left, player 2 top-right.
-fn bouquet_base(views: &Views, player: usize) -> Vec2 {
+/// Top-left corner of a player's display. Split screen: the corner of their own half.
+/// One shared view: player 1 on the left, player 2 on the right.
+fn hud_corner(views: &Views, player: usize) -> Vec2 {
     if views.split {
         let c = player.min(1);
-        views.pos[c] + Vec2::new(-views.half[c].x + 50.0, views.half[c].y - 88.0)
+        views.pos[c] + Vec2::new(-views.half[c].x, views.half[c].y)
     } else if player == 0 {
-        views.pos[0] + Vec2::new(-views.half[0].x + 50.0, views.half[0].y - 88.0)
+        views.pos[0] + Vec2::new(-views.half[0].x, views.half[0].y)
     } else {
-        views.pos[0] + Vec2::new(views.half[0].x - 190.0, views.half[0].y - 88.0)
+        views.pos[0] + Vec2::new(views.half[0].x - 230.0, views.half[0].y)
     }
 }
 
-/// Each player's bouquet: one flower per flower in hand, and a heart for every ten, ready to send to the partner.
+/// Where a player's bouquet sits: under their face and lives.
+fn bouquet_base(views: &Views, player: usize) -> Vec2 {
+    hud_corner(views, player) + Vec2::new(34.0, -98.0)
+}
+
+/// Each player's corner: their face, a row of hearts for lives, and their bouquet.
+/// The bouquet holds one flower per flower in hand; every ten shows as a small heart ready to send.
 #[allow(clippy::too_many_arguments)]
 fn bouquet(
     mut commands: Commands,
     game: Res<Game>,
+    skin: Res<Skin>,
     juice: Res<Juice>,
     views: Res<Views>,
+    time: Res<Time>,
     flying: Query<&Flower>,
-    mut bits: Query<(Entity, &HudBit, &mut Transform, &mut Visibility), Without<Divider>>,
+    mut bits: Query<(Entity, &HudBit, &mut Transform, &mut Visibility, &mut Sprite), Without<Divider>>,
     mut divider: Query<&mut Visibility, With<Divider>>,
     mut was_split: Local<Option<bool>>,
 ) {
     if let Ok(mut v) = divider.single_mut() {
         *v = if views.split { Visibility::Visible } else { Visibility::Hidden };
     }
-    // In one shared view both bouquets are drawn by the first camera.
+    // In one shared view both players' corners are drawn by the first camera.
     let relayer = *was_split != Some(views.split);
     *was_split = Some(views.split);
     let players = &game.world.players;
-    for (e, bit, mut tf, mut vis) in &mut bits {
+    let max = game.tuning.player.max_hp.max(0) as usize;
+    let beat = 1.0 + (time.elapsed_secs() * 6.0).sin().max(0.0) * 0.18;
+    for (e, bit, mut tf, mut vis, mut sprite) in &mut bits {
         if relayer {
             commands.entity(e).insert(RenderLayers::layer(if views.split { bit.cam + 1 } else { 1 }));
         }
@@ -1387,22 +1407,42 @@ fn bouquet(
         let in_air = flying.iter().filter(|f| f.player == bit.cam).count() as u32;
         let have = p.flowers.saturating_sub(in_air);
         let held = (have % sim::FLOWERS_PER_HEART) as usize;
-        let hearts = (have / sim::FLOWERS_PER_HEART) as usize;
+        let ready = (have / sim::FLOWERS_PER_HEART) as usize;
+        let corner = hud_corner(&views, bit.cam);
         let base = bouquet_base(&views, bit.cam);
-        let (show, pos, pop) = match bit.kind {
-            0 => (true, base, false),
+        let character = (skin.0 + bit.cam) % 2;
+        let mut scale = 1.0;
+        let (show, pos) = match bit.kind {
+            0 => (true, base),
             1 => {
                 // Slots fill from the middle outward, so the bunch grows evenly.
                 let step = ((bit.i + 1) / 2) as f32 * if bit.i % 2 == 0 { 1.0 } else { -1.0 };
                 let a = (step * 13.0f32).to_radians();
                 let r = 12.0 + (bit.i % 3) as f32 * 7.0;
-                (bit.i < held, base + Vec2::new(a.sin() * r, 14.0 + a.cos() * r), bit.i + 1 == held && juice.pulse > 0.0)
+                if bit.i + 1 == held && juice.pulse > 0.0 {
+                    scale = 1.0 + juice.pulse * 3.0;
+                }
+                (bit.i < held, base + Vec2::new(a.sin() * r, 14.0 + a.cos() * r))
             }
-            _ => (bit.i < hearts, base + Vec2::new(60.0 + bit.i as f32 * 23.0, 8.0), false),
+            2 => {
+                // Hearts ready to send sit beside the bouquet and beat, so they read as "press to give".
+                scale = beat;
+                (bit.i < ready, base + Vec2::new(40.0 + bit.i as f32 * 17.0, 2.0))
+            }
+            3 => {
+                // Lives: bright hearts for lives left, dark ones for lives lost.
+                let alive = (bit.i as i32) < p.hp;
+                sprite.color = if alive { Color::WHITE } else { Color::srgba(0.12, 0.08, 0.1, 0.75) };
+                (bit.i < max, corner + Vec2::new(64.0 + bit.i as f32 * 20.0, -30.0))
+            }
+            k => {
+                sprite.color = if p.down { Color::srgb(0.3, 0.3, 0.35) } else { Color::WHITE };
+                (k as usize == 5 + character, corner + Vec2::new(30.0, -30.0))
+            }
         };
         *vis = if show { Visibility::Visible } else { Visibility::Hidden };
         tf.translation = pos.extend(6.0 + bit.kind as f32 * 0.01);
-        tf.scale = Vec3::splat(if pop { 1.0 + juice.pulse * 3.0 } else { 1.0 });
+        tf.scale = Vec3::splat(scale);
     }
 }
 
