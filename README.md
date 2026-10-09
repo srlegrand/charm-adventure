@@ -45,6 +45,16 @@ Keep the `assets` folder next to the game; it will not start without it.
 
 The game opens full screen on the primary monitor. Start it with `--windowed` to keep it in a window.
 
+## Steam Deck: always the latest
+
+For trying changes fast on a Deck. In Desktop Mode, open Konsole and run:
+
+```
+wget -O ~/charm-play.sh https://raw.githubusercontent.com/srlegrand/charm-adventure/main/deck/charm-play.sh && chmod +x ~/charm-play.sh && ~/charm-play.sh
+```
+
+The first run sets up a build container and compiles everything, which takes a long time. After that, add `/home/deck/charm-play.sh` to Steam as a Non-Steam Game: every launch pulls the latest version, rebuilds what changed, and starts the game. The log of the last launch is in `~/charm-play.log`.
+
 ## Controls
 
 | Action | Controller | Keyboard and mouse |
@@ -103,3 +113,4 @@ sudo apt install libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 - `src/story_data.rs`: the story as kept on disk, shared by both.
 - `design/`: the scripts that draw the art. `design/concept.py` draws the picture at the top of this page.
 - `packaging/wheel.py`: packs a build into a pip wheel.
+- `deck/charm-play.sh`: pull, rebuild and run on a Steam Deck.
