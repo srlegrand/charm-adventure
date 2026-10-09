@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Charm Adventure in Tomato Land - movement slice.
+mod editor;
 mod sim;
 
 use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
@@ -8,7 +9,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ClearColorConfig, Hdr, Viewport};
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use sim::{AttackDir, Rect, Tuning, World as SimWorld};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -51,35 +52,35 @@ struct StoryUi {
 const BUBBLE_TEXT_SCALE: f32 = 0.5;
 
 /// Speech, loaded from assets/story/<level>.ron. This is the data the story editor will write.
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Serialize, Default, Clone)]
 struct StoryFile {
     scenes: Vec<Scene>,
 }
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 struct Scene {
     id: String,
     trigger: Trigger,
     /// Flags that must all be set for this scene to play.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requires: Vec<String>,
     /// Flags set when it plays.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     set: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     lines: Vec<Line>,
     /// Offered after the lines; the game waits for an answer.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     choices: Vec<Choice>,
 }
 /// One answer to a choice: it can set flags, jump to another scene, or leave for another level.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 struct Choice {
     text: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     set: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     goto: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     level: String,
 }
 #[derive(Clone)]
@@ -87,19 +88,22 @@ enum Beat {
     Say(Line),
     Ask(Vec<Choice>),
 }
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 enum Trigger {
     LevelStart,
     Enter(Rect),
     /// Only reached from a choice.
     Manual,
 }
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 struct Line {
     who: String,
     text: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     secs: f32,
+}
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 #[derive(Resource, Default)]
 struct Story {
@@ -370,9 +374,10 @@ fn main() {
         .init_resource::<ShowShapes>()
         .init_resource::<Juice>()
         .init_resource::<Story>()
+        .init_resource::<editor::Editor>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
-        .add_systems(Startup, setup)
-        .add_systems(Update, (read_input, hot_reload, build_geo, animate, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
+        .add_systems(Startup, (setup, editor::setup))
+        .add_systems(Update, (read_input, hot_reload, editor::edit, build_geo, animate, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes).chain())
         .add_systems(FixedUpdate, tick)
         .run();
 }
@@ -571,9 +576,9 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
     };
 }
 
-fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>) {
+fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>, ed: Res<editor::Editor>) {
     // The world holds still in the menu and while a story choice is on screen.
-    if chooser.0 || story.ask.is_some() {
+    if chooser.0 || story.ask.is_some() || ed.on {
         return;
     }
     let g = &mut *game;
@@ -607,7 +612,11 @@ fn restart(game: &mut Game) {
 }
 
 /// Polls the tuning and level files twice a second and applies edits live.
-fn hot_reload(time: Res<Time>, mut acc: Local<f32>, mut game: ResMut<Game>) {
+fn hot_reload(time: Res<Time>, mut acc: Local<f32>, mut game: ResMut<Game>, ed: Res<editor::Editor>) {
+    // The editor holds the level while it is open.
+    if ed.on {
+        return;
+    }
     *acc += time.delta_secs();
     if *acc < 0.5 {
         return;
@@ -983,13 +992,14 @@ fn camera(
     mut layers: Query<(&BgLayer, &mut Transform, &mut Visibility), Without<ViewCam>>,
     mut juice: ResMut<Juice>,
     mut views: ResMut<Views>,
+    ed: Res<editor::Editor>,
     mut base: Local<[Option<Vec2>; 2]>,
 ) {
     let Ok(win) = window.single() else { return };
     let w = &game.world;
     let a = fixed.overstep_fraction();
     let b: Rect = w.level.bounds;
-    let split = w.players.len() == 2 && views.want_split;
+    let split = w.players.len() == 2 && views.want_split && !ed.on;
     views.split = split;
     let (pw, ph) = (win.physical_width().max(2), win.physical_height().max(2));
     juice.shake = (juice.shake - time.delta_secs() * 40.0).max(0.0);
@@ -1006,7 +1016,7 @@ fn camera(
         }
         cam.viewport = if split { Some(Viewport { physical_position: UVec2::new(i as u32 * pw / 2, 0), physical_size: UVec2::new(pw / 2, ph), ..default() }) } else { None };
         let aspect = if split { (pw / 2) as f32 / ph as f32 } else { pw as f32 / ph as f32 };
-        let half = Vec2::new(VIEW_H / 2.0 * aspect, VIEW_H / 2.0);
+        let half = Vec2::new(VIEW_H / 2.0 * aspect, VIEW_H / 2.0) * if ed.on { ed.zoom } else { 1.0 };
         // What this camera follows: its own player in split screen (their partner if they are down), otherwise everyone standing.
         let (focus, facing) = if split {
             let p = w.players.get(i).filter(|p| !p.down).or(up.first().copied()).or(w.players.get(i));
@@ -1024,6 +1034,8 @@ fn camera(
         );
         let k = 1.0 - (-8.0 * time.delta_secs()).exp();
         let pos = base[i].unwrap_or(target).lerp(target, k);
+        // The editor moves the view itself.
+        let pos = if ed.on { ed.cam } else { pos };
         base[i] = Some(pos);
         // Shake starts hard and dies away fast.
         let jolt = Vec2::new(juice.rand() - 0.5, juice.rand() - 0.5) * 2.0 * juice.shake;
@@ -1117,11 +1129,15 @@ fn hotkeys(
     mut show: ResMut<ShowShapes>,
     mut views: ResMut<Views>,
     mut story: ResMut<Story>,
+    ed: Res<editor::Editor>,
     mut held: Local<Vec<Entity>>,
     mut ask_held: Local<bool>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if ed.on {
+        return;
+    }
     let pad = |b: GamepadButton| pads.iter().any(|(_, p)| p.just_pressed(b));
     // A story choice on screen: anyone can move the highlight and confirm.
     if !chooser.0 {
@@ -1671,6 +1687,7 @@ fn story(
     ui: Res<StoryUi>,
     views: Res<Views>,
     mut story: ResMut<Story>,
+    ed: Res<editor::Editor>,
     mut parts: Query<(&mut Transform, Option<&mut Sprite>, Option<&mut Text2d>, Option<&mut Visibility>), With<BubblePart>>,
 ) {
     let dt = time.delta_secs();
@@ -1702,6 +1719,12 @@ fn story(
         }
     }
     let w = &game.world;
+    if ed.on {
+        if let Ok((_, _, _, Some(mut vis))) = parts.get_mut(ui.root) {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
     // A restarted level tells its story again.
     if w.tick < story.last_tick {
         story.played.clear();
