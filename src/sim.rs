@@ -13,6 +13,8 @@ pub struct Input {
     pub attack: bool,
     pub dash: bool,
     pub call_dog: bool,
+    /// Pass one life to the other player.
+    pub give: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,6 +184,8 @@ pub struct Player {
     pub combo_t: f32,
     /// Side swings alternate direction: down-stroke, then up-stroke.
     pub swing_alt: bool,
+    /// Out of lives in a two-player game: lying where they fell until the partner passes a life.
+    pub down: bool,
     pub safe_x: f32,
     pub safe_y: f32,
     pub prev: Input,
@@ -212,6 +216,9 @@ pub enum Event {
     Hit { x: f32, y: f32, dir: f32 },
     Kill { x: f32, y: f32, kind: String, flowers: u32, dir: f32, combo: u32 },
     Hurt { x: f32, y: f32 },
+    /// A life passed from one player to the other.
+    Give { from: usize, to: usize },
+    Down { player: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -304,7 +311,7 @@ impl Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
             air_dash_ready: true, dash_t: 0.0, dash_cd: 0.0, sprinting: false, wall_lock: 0.0,
-            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, combo: 0, combo_t: 0.0, swing_alt: false, safe_x: x, safe_y: y,
+            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, combo: 0, combo_t: 0.0, swing_alt: false, down: false, safe_x: x, safe_y: y,
             prev: Input::default(),
         }
     }
@@ -380,8 +387,16 @@ impl World {
             .iter()
             .filter_map(|s| {
                 let t = tuning.enemies.get(&s.kind)?;
+                // A spawn point set a little into the floor is lifted clear, so nothing starts stuck in rock.
+                let mut y = s.y;
+                for _ in 0..80 {
+                    if !hits(&level.solids, &Rect::centered(s.x, y, t.width, t.height)) {
+                        break;
+                    }
+                    y += 1.0;
+                }
                 Some(Enemy {
-                    kind: s.kind.clone(), x: s.x, y: s.y, px: s.x, py: s.y, vx: 0.0, vy: 0.0, dir: -1.0,
+                    kind: s.kind.clone(), x: s.x, y, px: s.x, py: y, vx: 0.0, vy: 0.0, dir: -1.0,
                     hp: t.hp, on_ground: false, timer: 0.0, stun: 0.0, flash: 0.0,
                 })
             })
@@ -412,11 +427,51 @@ impl World {
             return;
         }
         self.tick += 1;
+        // Passing a life: costs the giver one, heals the partner one, and gets a downed partner back up.
+        if self.players.len() == 2 {
+            for from in 0..2 {
+                let to = 1 - from;
+                let inp = inputs.get(from).copied().unwrap_or_default();
+                let pressed = inp.give && !self.players[from].prev.give;
+                let (giver, taker) = (&self.players[from], &self.players[to]);
+                if pressed && !giver.down && giver.hp > 1 && (taker.down || taker.hp < t.max_hp) {
+                    let (gx, gy, face) = (giver.x, giver.y, giver.facing);
+                    self.players[from].hp -= 1;
+                    let p = &mut self.players[to];
+                    if p.down {
+                        let score = p.score;
+                        *p = Player::new(gx, gy, t);
+                        p.score = score;
+                        p.hp = 1;
+                        p.facing = face;
+                        p.invuln = t.invuln_time * 2.0;
+                    } else {
+                        p.hp += 1;
+                    }
+                    self.events.push(Event::Give { from, to });
+                }
+            }
+            // Both down: everyone gets back up at the start.
+            if self.players.iter().all(|p| p.down) {
+                for (i, p) in self.players.iter_mut().enumerate() {
+                    let s = self.level.spawns[i % self.level.spawns.len()];
+                    let score = p.score;
+                    *p = Player::new(s.0, s.1, t);
+                    p.score = score;
+                }
+            }
+        }
+        let solo = self.players.len() < 2;
         let solids = &self.level.solids;
         let bounds = self.level.bounds;
 
         for (i, p) in self.players.iter_mut().enumerate() {
             let inp = inputs.get(i).copied().unwrap_or_default();
+            if p.down {
+                (p.px, p.py) = (p.x, p.y);
+                p.prev = inp;
+                continue;
+            }
             let pressed = |now: bool, before: bool| now && !before;
             let jump_pressed = pressed(inp.jump, p.prev.jump);
             let dash_pressed = pressed(inp.dash, p.prev.dash);
@@ -566,11 +621,16 @@ impl World {
                 p.invuln = t.invuln_time;
                 self.events.push(Event::Hurt { x: p.x, y: p.y });
             }
-            if p.hp <= 0 {
+            if p.hp <= 0 && solo {
                 let s = self.level.spawns[i % self.level.spawns.len()];
                 let score = p.score;
                 *p = Player::new(s.0, s.1, t);
                 p.score = score;
+            } else if p.hp <= 0 {
+                p.hp = 0;
+                p.down = true;
+                (p.vx, p.vy, p.dash_t, p.attack_t) = (0.0, 0.0, 0.0, 0.0);
+                self.events.push(Event::Down { player: i });
             }
             p.prev = inp;
         }
@@ -600,7 +660,7 @@ impl World {
                             e.timer += DT;
                             if e.timer >= interval {
                                 e.timer = 0.0;
-                                let target = self.players.iter().map(|p| p.x).min_by(|a, b| (a - e.x).abs().total_cmp(&(b - e.x).abs()));
+                                let target = self.players.iter().filter(|p| !p.down).map(|p| p.x).min_by(|a, b| (a - e.x).abs().total_cmp(&(b - e.x).abs()));
                                 if let Some(tx) = target {
                                     e.dir = if tx < e.x { -1.0 } else { 1.0 };
                                 }
@@ -680,7 +740,7 @@ impl World {
                     }
                 }
             }
-            if p.invuln <= 0.0 {
+            if p.invuln <= 0.0 && !p.down {
                 let (a, b, r) = p.capsule(t);
                 for e in &self.enemies {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
@@ -820,5 +880,48 @@ mod tests {
         }
         assert!(w.enemies.is_empty());
         assert!(w.players[0].vy > 0.0);
+    }
+
+    #[test]
+    fn passing_a_life_heals_and_revives() {
+        let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
+        let level = Level {
+            name: "test".into(),
+            bounds: Rect(0.0, 0.0, 2000.0, 1000.0),
+            spawns: vec![(500.0, 100.0), (700.0, 100.0)],
+            solids: vec![Rect(0.0, 0.0, 2000.0, 40.0)],
+            hazards: vec![],
+            enemies: vec![],
+        };
+        let mut w = World::new(level, &tuning, 2);
+        let none = Input::default();
+        let give = Input { give: true, ..Default::default() };
+        let max = tuning.player.max_hp;
+        // Nothing to give when the partner is full.
+        w.step(&[give, none], &tuning);
+        assert_eq!((w.players[0].hp, w.players[1].hp), (max, max));
+        w.step(&[none, none], &tuning);
+        // Partner hurt: one life moves across.
+        w.players[1].hp = 2;
+        w.step(&[give, none], &tuning);
+        assert_eq!((w.players[0].hp, w.players[1].hp), (max - 1, 3));
+        // Holding the button does not drain the giver.
+        w.step(&[give, none], &tuning);
+        assert_eq!(w.players[0].hp, max - 1);
+        w.step(&[none, none], &tuning);
+        // Partner out of lives goes down, and a passed life brings them back beside the giver.
+        w.players[1].hp = 0;
+        w.step(&[none, none], &tuning);
+        assert!(w.players[1].down);
+        w.step(&[give, none], &tuning);
+        assert!(!w.players[1].down);
+        assert_eq!((w.players[0].hp, w.players[1].hp), (max - 2, 1));
+        assert!((w.players[1].x - w.players[0].x).abs() < 5.0);
+        // The last life cannot be given away.
+        w.players[0].hp = 1;
+        w.players[1].hp = 1;
+        w.step(&[none, none], &tuning);
+        w.step(&[give, none], &tuning);
+        assert_eq!((w.players[0].hp, w.players[1].hp), (1, 1));
     }
 }

@@ -18,7 +18,8 @@ const BG_SIZE: Vec2 = Vec2::new(1080.0, 675.0);
 struct Game {
     world: SimWorld,
     tuning: Tuning,
-    input: sim::Input,
+    input: [sim::Input; 2],
+    players: usize,
     dir: PathBuf,
     stamps: [Option<SystemTime>; 2],
     status: String,
@@ -171,9 +172,10 @@ fn main() {
     };
     let fullscreen = std::env::args().any(|a| a == "--fullscreen");
     let game = Game {
-        world: settled(level, &tuning),
+        world: settled(level, &tuning, 1),
         tuning,
         input: default(),
+        players: 1,
         stamps: stamps(&dir),
         dir,
         status: String::new(),
@@ -290,33 +292,56 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
 
 fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, pads: Query<&Gamepad>, mut game: ResMut<Game>) {
     let k = |codes: &[KeyCode]| codes.iter().any(|c| keys.pressed(*c));
-    let mut i = sim::Input {
+    let keyboard = sim::Input {
         x: k(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32 - k(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
         y: k(&[KeyCode::ArrowUp, KeyCode::KeyW]) as i8 as f32 - k(&[KeyCode::ArrowDown, KeyCode::KeyS]) as i8 as f32,
         jump: k(&[KeyCode::Space, KeyCode::KeyZ]),
         attack: k(&[KeyCode::KeyX, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left),
         dash: k(&[KeyCode::KeyC, KeyCode::KeyK, KeyCode::ShiftLeft]) || mouse.pressed(MouseButton::Right),
         call_dog: k(&[KeyCode::KeyF]),
+        give: k(&[KeyCode::KeyG, KeyCode::KeyQ]),
     };
-    for pad in &pads {
+    let from_pad = |pad: &Gamepad| {
         let stick = pad.left_stick();
         let dpad = Vec2::new(
             pad.pressed(GamepadButton::DPadRight) as i8 as f32 - pad.pressed(GamepadButton::DPadLeft) as i8 as f32,
             pad.pressed(GamepadButton::DPadUp) as i8 as f32 - pad.pressed(GamepadButton::DPadDown) as i8 as f32,
         );
         let v = if dpad != Vec2::ZERO { dpad } else { stick };
-        if v.x.abs() > 0.25 {
-            i.x = v.x;
+        sim::Input {
+            x: if v.x.abs() > 0.25 { v.x } else { 0.0 },
+            y: if v.y.abs() > 0.25 { v.y } else { 0.0 },
+            jump: pad.pressed(GamepadButton::South),
+            attack: pad.pressed(GamepadButton::West),
+            dash: pad.pressed(GamepadButton::RightTrigger2),
+            call_dog: pad.pressed(GamepadButton::North),
+            give: pad.pressed(GamepadButton::East),
         }
-        if v.y.abs() > 0.25 {
-            i.y = v.y;
+    };
+    let merge = |a: sim::Input, b: sim::Input| sim::Input {
+        x: if b.x != 0.0 { b.x } else { a.x },
+        y: if b.y != 0.0 { b.y } else { a.y },
+        jump: a.jump || b.jump,
+        attack: a.attack || b.attack,
+        dash: a.dash || b.dash,
+        call_dog: a.call_dog || b.call_dog,
+        give: a.give || b.give,
+    };
+    let pads: Vec<sim::Input> = pads.iter().map(from_pad).collect();
+    // One player: keyboard and every controller drive player 1.
+    // Two players: keyboard is player 1 and the controller is player 2; with two controllers they take one each.
+    let mut out = [keyboard, sim::Input::default()];
+    if game.players < 2 {
+        for p in &pads {
+            out[0] = merge(out[0], *p);
         }
-        i.jump |= pad.pressed(GamepadButton::South);
-        i.attack |= pad.pressed(GamepadButton::West);
-        i.dash |= pad.pressed(GamepadButton::RightTrigger2);
-        i.call_dog |= pad.pressed(GamepadButton::North);
+    } else if pads.len() == 1 {
+        out[1] = pads[0];
+    } else if pads.len() >= 2 {
+        out[0] = merge(out[0], pads[0]);
+        out[1] = pads[1];
     }
-    game.input = i;
+    game.input = out;
 }
 
 fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>) {
@@ -324,15 +349,15 @@ fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>)
         return;
     }
     let g = &mut *game;
-    g.world.step(&[g.input], &g.tuning);
+    g.world.step(&g.input, &g.tuning);
     juice.events.extend(g.world.events.drain(..));
 }
 
 /// A new world, run for a moment so everyone starts standing on the ground.
-fn settled(level: sim::Level, tuning: &Tuning) -> SimWorld {
-    let mut world = SimWorld::new(level, tuning, 1);
+fn settled(level: sim::Level, tuning: &Tuning, players: usize) -> SimWorld {
+    let mut world = SimWorld::new(level, tuning, players);
     for _ in 0..20 {
-        world.step(&[sim::Input::default()], tuning);
+        world.step(&[sim::Input::default(); 2], tuning);
     }
     world
 }
@@ -340,7 +365,7 @@ fn settled(level: sim::Level, tuning: &Tuning) -> SimWorld {
 fn restart(game: &mut Game) {
     match load(&game.dir) {
         Ok((tuning, level)) => {
-            game.world = settled(level, &tuning);
+            game.world = settled(level, &tuning, game.players);
             game.tuning = tuning;
             game.geo_dirty = true;
             game.status.clear();
@@ -459,7 +484,9 @@ fn animate(
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
     for (rig, mut pose, mut tf, mut vis) in &mut rigs {
-        let Some(p) = w.players.first().filter(|_| rig.who == skin.0) else {
+        // Player 1 is the chosen character, player 2 the other one.
+        let index = (rig.who + 2 - skin.0) % 2;
+        let Some(p) = w.players.get(index) else {
             *vis = Visibility::Hidden;
             continue;
         };
@@ -494,6 +521,10 @@ fn animate(
             g = [stride * 1.05, -stride * 1.05, lean, -lean * 0.6, -0.5 + stride * 0.35, if p.sprinting { -0.12 } else { -0.05 }, 1.0, 1.0];
             bob = stride.abs() * 4.0;
             snap = 40.0;
+        }
+        if p.down {
+            // Out of lives: flat on the ground until the partner passes one over.
+            g = [0.2, -0.1, 0.1, 0.3, 0.6, 1.5, 1.0, 1.0];
         }
         if attacking {
             let (lb, lf, body, tilt, sy) = match p.attack_dir {
@@ -598,7 +629,20 @@ fn camera(
     mut juice: ResMut<Juice>,
     mut base: Local<Option<Vec2>>,
 ) {
-    let (Ok(mut cam), Some(p), Ok(win)) = (cam.single_mut(), game.world.players.first(), window.single()) else { return };
+    let (Ok(mut cam), Some(first), Ok(win)) = (cam.single_mut(), game.world.players.first(), window.single()) else { return };
+    // Follow the middle of the players still standing (on two Decks each player will get their own camera).
+    let up: Vec<&sim::Player> = game.world.players.iter().filter(|p| !p.down).collect();
+    let n = up.len().max(1) as f32;
+    let mut p = first.clone();
+    if !up.is_empty() {
+        p.x = up.iter().map(|q| q.x).sum::<f32>() / n;
+        p.y = up.iter().map(|q| q.y).sum::<f32>() / n;
+        p.px = up.iter().map(|q| q.px).sum::<f32>() / n;
+        p.py = up.iter().map(|q| q.py).sum::<f32>() / n;
+        if up.len() > 1 {
+            p.facing = 0.0;
+        }
+    }
     let a = fixed.overstep_fraction();
     let b: Rect = game.world.level.bounds;
     let half_h = VIEW_H / 2.0;
@@ -632,14 +676,18 @@ fn hud(
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
 ) {
-    let (Ok(mut text), Some(p)) = (text.single_mut(), game.world.players.first()) else { return };
+    let (Ok(mut text), Some(_)) = (text.single_mut(), game.world.players.first()) else { return };
     let pad = match pads.iter().count() {
         0 => "no controller".to_string(),
         n => format!("{n} controller{}", if n == 1 { "" } else { "s" }),
     };
+    let lives: Vec<String> = game.world.players.iter().enumerate().map(|(i, q)| {
+        let who = if (skin.0 + i) % 2 == 0 { "SIMON" } else { "CHARM" };
+        format!("{who} {}/{}{}", q.hp, game.tuning.player.max_hp, if q.down { " DOWN" } else { "" })
+    }).collect();
     let line = format!(
-        "HP {}/{}   Flowers {}{}   Tomatoes {}   {}   {}\n{}",
-        p.hp, game.tuning.player.max_hp, juice.shown_score, if juice.pulse > 0.0 { " +" } else { "" }, game.world.enemies.len(), game.world.level.name, pad, game.status
+        "{}   Flowers {}{}   Tomatoes {}   {}   {}\n{}",
+        lives.join("   "), juice.shown_score, if juice.pulse > 0.0 { " +" } else { "" }, game.world.enemies.len(), game.world.level.name, pad, game.status
     );
     if text.0 != line {
         text.0 = line;
@@ -647,9 +695,11 @@ fn hud(
     if let Ok(mut pick) = pick.single_mut() {
         let want = if chooser.0 {
             let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
-            format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nLeft / Right to choose\nA, Space or Enter to start")
-        } else if p.combo >= 2 {
-            format!("x{} COMBO", p.combo)
+            let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
+            let how = if game.players == 1 { "" } else { "\n\nPlayer 1 picks; player 2 is the other.\nKeyboard is player 1, controller is player 2.\nPass a life: B on the controller, G on the keyboard" };
+            format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\n{n}\n\nLeft / Right: character     Up / Down: players\nA, Space or Enter to start{how}")
+        } else if game.world.players.iter().any(|q| q.combo >= 2) {
+            format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
         } else {
             String::new()
         };
@@ -681,6 +731,11 @@ fn hotkeys(
         *held = stick.abs() > 0.4;
         let left = keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyA) || pad(GamepadButton::DPadLeft) || (flick && stick < 0.0);
         let right = keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) || pad(GamepadButton::DPadRight) || (flick && stick > 0.0);
+        let updown = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyW) || keys.just_pressed(KeyCode::KeyS) || pad(GamepadButton::DPadUp) || pad(GamepadButton::DPadDown);
+        if updown {
+            game.players = 3 - game.players;
+            restart(&mut game);
+        }
         if left {
             skin.0 = 0;
         }
@@ -815,6 +870,23 @@ fn juice(
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 8, 420.0, 22.0, white, dir);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 5, 260.0, 8.0, Color::srgb(0.85, 0.2, 0.18), dir);
             }
+            sim::Event::Give { from, to } => {
+                if let (Some(a0), Some(b0)) = (at(from), at(to)) {
+                    let pink = Color::srgb(3.0, 1.2, 1.8);
+                    light(&mut commands, b0, 300.0, 0.3, 0.3);
+                    for i in 0..5 {
+                        let life = 0.22 + i as f32 * 0.03;
+                        spawn_fx(&mut commands, Sprite::from_color(pink, Vec2::splat(7.0)), a0, 4.5, 0.785, Fx { vel: (b0 - a0) / life, gravity: 0.0, drag: 0.0, life, max: life, spin: 8.0, grow: 0.0 });
+                    }
+                    burst(&mut commands, &mut juice, b0, 10, 300.0, 16.0, pink, 0.0);
+                }
+            }
+            sim::Event::Down { player } => {
+                juice.shake = juice.shake.max(10.0);
+                if let Some(p0) = at(player) {
+                    burst(&mut commands, &mut juice, p0, 16, 420.0, 24.0, white, 0.0);
+                }
+            }
             sim::Event::Hurt { x, y } => {
                 juice.shake = juice.shake.max(9.0);
                 burst(&mut commands, &mut juice, Vec2::new(x, y), 10, 380.0, 18.0, white, 0.0);
@@ -858,7 +930,7 @@ fn juice(
 
     // Speed lines trail the whole dash.
     for (i, p) in w.players.iter().enumerate() {
-        if p.dash_t > 0.0 && w.hitstop == 0 {
+        if p.dash_t > 0.0 && w.hitstop == 0 && !p.down {
             let Some(pos) = at(i) else { continue };
             light(&mut commands, pos - Vec2::X * p.facing * 30.0, 240.0, 0.10, 0.12);
             for _ in 0..2 {
@@ -919,7 +991,7 @@ fn juice(
         }
     }
     // Keep the shown score honest after a restart or if a flower was lost.
-    let real = w.players.first().map(|p| p.score).unwrap_or(0);
+    let real = w.players.iter().map(|p| p.score).sum::<u32>();
     if flowers.is_empty() && juice.shown_score != real {
         juice.shown_score = real;
     }
