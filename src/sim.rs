@@ -893,6 +893,22 @@ mod tests {
         assert!(w.level.actors.iter().any(|a| a.kind == "boss") && w.level.actors.iter().any(|a| a.kind == "partner"));
     }
 
+    /// The simulation must stay far inside its 16.6 ms tick, with room for a handheld's slower processor.
+    #[test]
+    fn a_tick_is_cheap() {
+        let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();
+        let mut w = World::new(load_level(include_str!("../assets/levels/rootway.ron")).unwrap(), &tuning, 2);
+        let input = [Input { x: 1.0, attack: true, ..Default::default() }; 2];
+        let t = std::time::Instant::now();
+        for _ in 0..6000 {
+            w.step(&input, &tuning);
+            w.events.clear();
+        }
+        let per = t.elapsed().as_secs_f64() * 1000.0 / 6000.0;
+        println!("one tick: {per:.4} ms");
+        assert!(per < 1.0, "one tick took {per:.3} ms");
+    }
+
     #[test]
     fn exits_carry_lives_and_flowers_to_the_next_level() {
         let tuning = load_tuning(include_str!("../assets/config/tuning.ron")).unwrap();

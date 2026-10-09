@@ -52,6 +52,7 @@ Keep the `assets` folder next to the game; it will not start without it.
 | Attack (hold up or down to aim) | X | X / J / left click |
 | Dash (hold to sprint) | Right trigger | C / K / Left Shift / right click |
 | Send 10 flowers to your partner as a heart | B | G / Q |
+| Pause menu: restart, players, split screen, full screen, quit | Start | |
 | Character and player menu | View / Select | Tab |
 | Split screen on and off | | F2 |
 | Show collision shapes, frame rate, where player 1 is | | F3 |
@@ -59,7 +60,7 @@ Keep the `assets` folder next to the game; it will not start without it.
 
 ## Two players
 
-Pick "2 PLAYERS" in the menu. With one controller, the keyboard is player 1 and the controller is player 2. With two controllers, each player gets one. The screen splits down the middle; F2 switches to one shared camera.
+The game is made for controllers; everything can be done from one. Pick "2 PLAYERS" in the menu and each player gets a controller. On a Steam Deck, add the game to Steam as a non-Steam game so the Deck's own controls reach it as a controller; it then starts full screen. The screen splits down the middle; F2 switches to one shared camera.
 
 Kill tomatoes to collect flowers into your bouquet. Send ten flowers to your partner and they become a heart: one life for them. You cannot make hearts for yourself. A player with no lives left goes down until their partner sends them a heart.
 

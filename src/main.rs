@@ -92,6 +92,14 @@ struct Views {
     want_split: bool,
 }
 
+/// The pause menu, opened with Start. Everything in it can be done from a controller.
+#[derive(Resource, Default)]
+struct Pause {
+    open: bool,
+    at: usize,
+}
+const PAUSE_ITEMS: [&str; 6] = ["Resume", "Restart this place", "Players and characters", "Split screen on / off", "Full screen on / off", "Quit"];
+
 #[derive(Component)]
 struct Geo;
 /// The ring Simon holds out.
@@ -303,7 +311,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let fullscreen = std::env::args().any(|a| a == "--fullscreen");
+    let fullscreen = std::env::args().any(|a| a == "--fullscreen") || std::env::var("SteamDeck").is_ok_and(|v| v == "1");
     let game = Game {
         world: settled(level, &tuning, 1),
         tuning,
@@ -337,10 +345,14 @@ fn main() {
         .init_resource::<Juice>()
         .init_resource::<Story>()
         .init_resource::<Stats>()
+        .init_resource::<Pause>()
+        .init_resource::<GeoStore>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
         .add_systems(Startup, setup)
-        .add_systems(Update, (read_input, hot_reload, build_geo, animate, boss, draw_enemies, camera, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
+        .add_systems(Update, (read_input, hot_reload, build_geo, animate, boss, draw_enemies, camera, stream_geo, juice, bouquet, story, hud, hotkeys, shapes, stats).chain())
         .add_systems(FixedUpdate, tick)
+        .add_systems(First, frame_begin)
+        .add_systems(Last, frame_end)
         .run();
 }
 
@@ -349,6 +361,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     for i in 0..2usize {
         commands.spawn((
             Camera2d,
+            Msaa::Off,
             ViewCam(i),
             Camera { order: i as isize, is_active: i == 0, ..default() },
             Hdr,
@@ -361,7 +374,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
         ));
     }
     // It shares the game cameras' HDR setting so all three draw into the same picture.
-    commands.spawn((Camera2d, Camera { order: 10, clear_color: ClearColorConfig::None, ..default() }, Hdr, RenderLayers::layer(31), IsDefaultUiCamera));
+    commands.spawn((Camera2d, Msaa::Off, Camera { order: 10, clear_color: ClearColorConfig::None, ..default() }, Hdr, RenderLayers::layer(31), IsDefaultUiCamera));
     commands.spawn((
         ImageNode::new(assets.load("sprites/bg/vignette.png")),
         Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
@@ -552,9 +565,9 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
     };
 }
 
-fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>) {
+fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>, pause: Res<Pause>) {
     // The world holds still in the menu and while a story choice is on screen.
-    if chooser.0 || story.ask.is_some() {
+    if chooser.0 || story.ask.is_some() || pause.open {
         return;
     }
     let g = &mut *game;
@@ -650,6 +663,7 @@ fn build_geo(
     assets: Res<AssetServer>,
     mut clear: ResMut<ClearColor>,
     old: Query<Entity, With<Geo>>,
+    mut store: ResMut<GeoStore>,
     mut backdrop: Query<(&BgLayer, &mut Sprite), Without<Geo>>,
 ) {
     if !game.geo_dirty {
@@ -676,8 +690,9 @@ fn build_geo(
     let solids = &level.solids;
     let inside = |x: f32, y: f32, skip: usize| solids.iter().enumerate().any(|(j, o)| j != skip && o.contains(x, y));
     let near_thorns = |x: f32, y: f32| level.hazards.iter().any(|h| h.overlaps(&Rect::centered(x, y, 40.0, 80.0)));
+    let mut items: Vec<(Sprite, Transform)> = Vec::new();
     let mut bar = |c: Color, x: f32, y: f32, w: f32, h: f32, z: f32, rot: f32| {
-        commands.spawn((Geo, Sprite::from_color(c, Vec2::new(w, h)), Transform::from_xyz(x, y, z).with_rotation(Quat::from_rotation_z(rot))));
+        items.push((Sprite::from_color(c, Vec2::new(w, h)), Transform::from_xyz(x, y, z).with_rotation(Quat::from_rotation_z(rot))));
     };
     let mut props: Vec<(&str, f32, f32, Vec2, f32, Color)> = Vec::new();
     for (i, s) in solids.iter().enumerate() {
@@ -798,7 +813,47 @@ fn build_geo(
         sprite.custom_size = Some(size);
         sprite.color = color;
         sprite.flip_x = name != "light" && noise(x * 0.7 + y) < 0.5;
-        commands.spawn((Geo, sprite, Transform::from_xyz(x, y, z)));
+        items.push((sprite, Transform::from_xyz(x, y, z)));
+    }
+    // Nothing is put in the world here: the pieces are filed by where they stand, and only those near a camera exist.
+    store.chunks.clear();
+    store.live.clear();
+    for (sprite, tf) in items {
+        let wide = sprite.custom_size.map(|s| s.x.max(s.y)).unwrap_or(0.0) > GEO_CHUNK;
+        let key = if wide { i32::MIN } else { (tf.translation.x / GEO_CHUNK).floor() as i32 };
+        store.chunks.entry(key).or_default().push((sprite, tf));
+    }
+}
+
+/// Level art is kept in strips. A strip is only in the world while a camera is near it,
+/// so a long level costs no more to draw or update than a short one.
+const GEO_CHUNK: f32 = 600.0;
+#[derive(Resource, Default)]
+struct GeoStore {
+    chunks: HashMap<i32, Vec<(Sprite, Transform)>>,
+    live: HashMap<i32, Vec<Entity>>,
+}
+fn stream_geo(mut commands: Commands, views: Res<Views>, mut store: ResMut<GeoStore>) {
+    let mut wanted: Vec<i32> = vec![i32::MIN];
+    for i in 0..if views.split { 2 } else { 1 } {
+        let lo = ((views.pos[i].x - views.half[i].x - 700.0) / GEO_CHUNK).floor() as i32;
+        let hi = ((views.pos[i].x + views.half[i].x + 700.0) / GEO_CHUNK).floor() as i32;
+        wanted.extend(lo..=hi);
+    }
+    let store = &mut *store;
+    let gone: Vec<i32> = store.live.keys().filter(|k| !wanted.contains(k)).copied().collect();
+    for k in gone {
+        for e in store.live.remove(&k).unwrap_or_default() {
+            commands.entity(e).despawn();
+        }
+    }
+    for k in wanted {
+        if store.live.contains_key(&k) {
+            continue;
+        }
+        let Some(items) = store.chunks.get(&k) else { continue };
+        let made = items.iter().map(|(s, t)| commands.spawn((Geo, s.clone(), *t)).id()).collect();
+        store.live.insert(k, made);
     }
 }
 
@@ -1096,6 +1151,7 @@ fn hud(
     story: Res<Story>,
     show: Res<ShowShapes>,
     stats: Res<Stats>,
+    pause: Res<Pause>,
     pads: Query<(Entity, &Gamepad)>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
@@ -1108,7 +1164,7 @@ fn hud(
     };
     // The top line is only for trouble (a file that failed to load) and, with F3, a line of details.
     let line = if show.0 {
-        format!("{:.0} fps   {} things   Tomatoes {}   {}   player 1 at {:.0}, {:.0}   {}\nDrawn by: {}\n{}", stats.fps, stats.entities, game.world.enemies.len(), game.world.level.name, game.world.players[0].x, game.world.players[0].y, pad, stats.gpu, game.status)
+        format!("{:.0} fps   game work {:.1} ms   {} things   Tomatoes {}   {}   player 1 at {:.0}, {:.0}   {}\nDrawn by: {}\n{}", stats.fps, stats.work_ms, stats.entities, game.world.enemies.len(), game.world.level.name, game.world.players[0].x, game.world.players[0].y, pad, stats.gpu, game.status)
     } else if stats.software {
         format!("SLOW: this is running without your graphics card ({}). Check the graphics driver.\n{}", stats.gpu, game.status)
     } else {
@@ -1125,23 +1181,26 @@ fn hud(
             };
             if menu.step == 0 {
                 let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
-                format!("HOW MANY PLAYERS?\n\n{n}\n\nLeft / Right to choose\nA, Space or Enter to confirm\nWhoever confirms is player 1\n\n{}", menu.note)
+                format!("HOW MANY PLAYERS?\n\n{n}\n\nLeft / Right to choose, A to confirm\nWhoever confirms is player 1\n\n{}", menu.note)
             } else {
                 let (mine, theirs) = if skin.0 == 0 { ("SIMON", "CHARM") } else { ("CHARM", "SIMON") };
                 let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
                 if game.players == 1 {
-                    format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nLeft / Right to choose\nA, Space or Enter to start\nB or Backspace to go back")
+                    format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nLeft / Right to choose, A to start, B to go back")
                 } else {
                     format!(
-                        "PLAYER 1, CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nPlayer 1 ({}) is {mine}\nPlayer 2 ({}) is {theirs}\n\nLeft / Right to choose\nA, Space or Enter to start\nB or Backspace to go back\n\nSend 10 flowers to your partner as a heart: B, or G on the keyboard\nF2 switches split screen on and off",
+                        "PLAYER 1, CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nPlayer 1 ({}) is {mine}\nPlayer 2 ({}) is {theirs}\n\nLeft / Right to choose, A to start, B to go back\n\nSend 10 flowers to your partner as a heart: B\nStart pauses",
                         name(menu.p1),
                         name(menu.p2)
                     )
                 }
             }
+        } else if pause.open {
+            let rows: Vec<String> = PAUSE_ITEMS.iter().enumerate().map(|(i, t)| if i == pause.at { format!("[ {t} ]") } else { format!("  {t}  ") }).collect();
+            format!("PAUSED\n\n{}\n\nUp / Down to choose, A to confirm, B or Start to resume", rows.join("\n"))
         } else if let Some((choices, at)) = &story.ask {
             let row: Vec<String> = choices.iter().enumerate().map(|(i, c)| if i == *at { format!("[ {} ]", c.text) } else { format!("  {}  ", c.text) }).collect();
-            format!("{}\n\nLeft / Right to choose\nA, Space or Enter to confirm", row.join("     "))
+            format!("{}\n\nLeft / Right to choose, A to confirm", row.join("     "))
         } else if game.world.players.iter().any(|q| q.combo >= 2) {
             format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
         } else {
@@ -1165,6 +1224,8 @@ fn hotkeys(
     mut story: ResMut<Story>,
     mut held: Local<Vec<Entity>>,
     mut ask_held: Local<bool>,
+    mut pause: ResMut<Pause>,
+    mut pause_held: Local<bool>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -1204,6 +1265,55 @@ fn hotkeys(
             }
             if !choice.level.is_empty() {
                 goto_level(&mut game, &choice.level);
+            }
+        }
+    }
+    // Start pauses. The pause menu reaches everything the keyboard keys did.
+    let mut quit = false;
+    let mut fullscreen = false;
+    if !chooser.0 && story.ask.is_none() {
+        let y = pads.iter().map(|(_, p)| p.left_stick().y).fold(0.0f32, |a, b| if b.abs() > a.abs() { b } else { a });
+        let flick = y.abs() > 0.6 && !*pause_held;
+        *pause_held = y.abs() > 0.4;
+        if pad(GamepadButton::Start) {
+            pause.open = !pause.open;
+            pause.at = 0;
+        } else if pause.open {
+            if pad(GamepadButton::DPadUp) || (flick && y > 0.0) {
+                pause.at = (pause.at + PAUSE_ITEMS.len() - 1) % PAUSE_ITEMS.len();
+            }
+            if pad(GamepadButton::DPadDown) || (flick && y < 0.0) {
+                pause.at = (pause.at + 1) % PAUSE_ITEMS.len();
+            }
+            if pad(GamepadButton::East) {
+                pause.open = false;
+            } else if pad(GamepadButton::South) {
+                pause.open = false;
+                match pause.at {
+                    1 => restart(&mut game),
+                    2 => {
+                        chooser.0 = true;
+                        menu.step = 0;
+                        menu.note.clear();
+                        return;
+                    }
+                    3 => views.want_split = !views.want_split,
+                    4 => fullscreen = true,
+                    5 => quit = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    // A player's controller was unplugged: stop and ask who is playing.
+    if game.players == 2 && !chooser.0 {
+        for d in [menu.p1, menu.p2] {
+            if let Device::Pad(e) = d {
+                if pads.get(e).is_err() {
+                    chooser.0 = true;
+                    menu.step = 0;
+                    menu.note = "A controller was disconnected. Plug it back in and choose again.".into();
+                }
             }
         }
     }
@@ -1257,7 +1367,7 @@ fn hotkeys(
                         Device::Pad(mine) => Some(pad_list.iter().find(|e| **e != mine).map(|e| Device::Pad(*e)).unwrap_or(Device::Keyboard)),
                     };
                     match (game.players, other) {
-                        (2, None) => menu.note = "Two players need a controller as well as the keyboard, or two controllers.".into(),
+                        (2, None) => menu.note = "Two players need two controllers.".into(),
                         (_, other) => {
                             menu.p1 = device;
                             menu.p2 = other.unwrap_or(Device::Keyboard);
@@ -1297,10 +1407,10 @@ fn hotkeys(
     if keys.just_pressed(KeyCode::KeyR) {
         restart(&mut game);
     }
-    if keys.just_pressed(KeyCode::Escape) {
+    if keys.just_pressed(KeyCode::Escape) || quit {
         exit.write(AppExit::Success);
     }
-    if keys.just_pressed(KeyCode::F11) {
+    if keys.just_pressed(KeyCode::F11) || fullscreen {
         if let Ok(mut w) = window.single_mut() {
             w.mode = match w.mode {
                 WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
@@ -1354,6 +1464,17 @@ struct Stats {
     log: f32,
     gpu: String,
     software: bool,
+    began: Option<std::time::Instant>,
+    work: f32,
+    work_ms: f32,
+}
+fn frame_begin(mut s: ResMut<Stats>) {
+    s.began = Some(std::time::Instant::now());
+}
+fn frame_end(mut s: ResMut<Stats>) {
+    if let Some(t) = s.began {
+        s.work += t.elapsed().as_secs_f32();
+    }
 }
 fn stats(time: Res<Time>, all: Query<Entity>, mut s: ResMut<Stats>, adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>) {
     if s.gpu.is_empty() {
@@ -1367,6 +1488,8 @@ fn stats(time: Res<Time>, all: Query<Entity>, mut s: ResMut<Stats>, adapter: Opt
     s.log += time.delta_secs();
     if s.acc >= 0.5 {
         s.fps = s.frames as f32 / s.acc;
+        s.work_ms = s.work / s.frames as f32 * 1000.0;
+        s.work = 0.0;
         s.entities = all.iter().count();
         s.acc = 0.0;
         s.frames = 0;
@@ -1374,7 +1497,7 @@ fn stats(time: Res<Time>, all: Query<Entity>, mut s: ResMut<Stats>, adapter: Opt
     if s.log >= 2.0 {
         s.log = 0.0;
         if std::env::var("CHARM_STATS").is_ok() {
-            eprintln!("STATS fps {:.0} entities {}", s.fps, s.entities);
+            eprintln!("STATS fps {:.0} entities {} game work {:.2} ms", s.fps, s.entities, s.work_ms);
         }
     }
 }
