@@ -124,6 +124,21 @@ struct Skin(usize);
 /// Character chooser. While open the game is paused.
 #[derive(Resource)]
 struct Chooser(bool);
+/// Something a player holds: the keyboard and mouse, or one controller.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Device {
+    Keyboard,
+    Pad(Entity),
+}
+/// The start menu. Step 0: how many players. Step 1: player 1 picks a character.
+/// Whoever confirms step 0 is player 1, on the device they pressed it with.
+#[derive(Resource)]
+struct Menu {
+    step: u8,
+    p1: Device,
+    p2: Device,
+    note: String,
+}
 #[derive(Component)]
 struct ChooserText;
 /// The line down the middle in split screen.
@@ -273,6 +288,7 @@ fn main() {
         .insert_resource(game)
         .insert_resource(Skin(0))
         .insert_resource(Chooser(true))
+        .insert_resource(Menu { step: 0, p1: Device::Keyboard, p2: Device::Keyboard, note: String::new() })
         .init_resource::<Art>()
         .init_resource::<ShowShapes>()
         .init_resource::<Juice>()
@@ -421,7 +437,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     }
 }
 
-fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, pads: Query<&Gamepad>, mut game: ResMut<Game>) {
+fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, pads: Query<(Entity, &Gamepad)>, menu: Res<Menu>, mut game: ResMut<Game>) {
     let k = |codes: &[KeyCode]| codes.iter().any(|c| keys.pressed(*c));
     let keyboard = sim::Input {
         x: k(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32 - k(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
@@ -458,21 +474,17 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
         call_dog: a.call_dog || b.call_dog,
         give: a.give || b.give,
     };
-    let pads: Vec<sim::Input> = pads.iter().map(from_pad).collect();
-    // One player: keyboard and every controller drive player 1.
-    // Two players: keyboard is player 1 and the controller is player 2; with two controllers they take one each.
-    let mut out = [keyboard, sim::Input::default()];
-    if game.players < 2 {
-        for p in &pads {
-            out[0] = merge(out[0], *p);
-        }
-    } else if pads.len() == 1 {
-        out[1] = pads[0];
-    } else if pads.len() >= 2 {
-        out[0] = merge(out[0], pads[0]);
-        out[1] = pads[1];
-    }
-    game.input = out;
+    let of = |d: Device| match d {
+        Device::Keyboard => keyboard,
+        Device::Pad(e) => pads.get(e).map(|(_, p)| from_pad(p)).unwrap_or_default(),
+    };
+    // One player: every device drives player 1.
+    // Two players: each player has exactly the device chosen in the start menu, and nothing else.
+    game.input = if game.players < 2 {
+        [pads.iter().fold(keyboard, |acc, (_, p)| merge(acc, from_pad(p))), sim::Input::default()]
+    } else {
+        [of(menu.p1), of(menu.p2)]
+    };
 }
 
 fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>) {
@@ -907,11 +919,13 @@ fn hud(
     game: Res<Game>,
     skin: Res<Skin>,
     chooser: Res<Chooser>,
-    pads: Query<&Gamepad>,
+    menu: Res<Menu>,
+    pads: Query<(Entity, &Gamepad)>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
 ) {
     let (Ok(mut text), Some(_)) = (text.single_mut(), game.world.players.first()) else { return };
+    let pad_ids: Vec<Entity> = pads.iter().map(|(e, _)| e).collect();
     let pad = match pads.iter().count() {
         0 => "no controller".to_string(),
         n => format!("{n} controller{}", if n == 1 { "" } else { "s" }),
@@ -929,10 +943,26 @@ fn hud(
     }
     if let Ok(mut pick) = pick.single_mut() {
         let want = if chooser.0 {
-            let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
-            let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
-            let how = if game.players == 1 { "" } else { "\n\nPlayer 1 picks; player 2 is the other.\nOne controller: keyboard is player 1, controller is player 2.\nTwo controllers: one each. F2 switches split screen on and off.\nSend 10 flowers to your partner as a heart: B on the controller, G on the keyboard" };
-            format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\n{n}\n\nLeft / Right: character     Up / Down: players\nA, Space or Enter to start{how}")
+            let name = |d: Device| match d {
+                Device::Keyboard => "keyboard".to_string(),
+                Device::Pad(e) => format!("controller {}", pad_ids.iter().position(|p| *p == e).map(|i| i + 1).unwrap_or(0)),
+            };
+            if menu.step == 0 {
+                let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
+                format!("HOW MANY PLAYERS?\n\n{n}\n\nLeft / Right to choose\nA, Space or Enter to confirm\nWhoever confirms is player 1\n\n{}", menu.note)
+            } else {
+                let (mine, theirs) = if skin.0 == 0 { ("SIMON", "CHARM") } else { ("CHARM", "SIMON") };
+                let (a, b) = if skin.0 == 0 { ("[ SIMON ]", "  CHARM  ") } else { ("  SIMON  ", "[ CHARM ]") };
+                if game.players == 1 {
+                    format!("CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nLeft / Right to choose\nA, Space or Enter to start\nB or Backspace to go back")
+                } else {
+                    format!(
+                        "PLAYER 1, CHOOSE YOUR CHARACTER\n\n{a}      {b}\n\nPlayer 1 ({}) is {mine}\nPlayer 2 ({}) is {theirs}\n\nLeft / Right to choose\nA, Space or Enter to start\nB or Backspace to go back\n\nSend 10 flowers to your partner as a heart: B, or G on the keyboard\nF2 switches split screen on and off",
+                        name(menu.p1),
+                        name(menu.p2)
+                    )
+                }
+            }
         } else if game.world.players.iter().any(|q| q.combo >= 2) {
             format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
         } else {
@@ -946,40 +976,97 @@ fn hud(
 
 fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    pads: Query<(Entity, &Gamepad)>,
     mut game: ResMut<Game>,
     mut skin: ResMut<Skin>,
     mut chooser: ResMut<Chooser>,
+    mut menu: ResMut<Menu>,
     mut show: ResMut<ShowShapes>,
     mut views: ResMut<Views>,
-    mut held: Local<bool>,
+    mut held: Local<Vec<Entity>>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let pad = |b: GamepadButton| pads.iter().any(|p| p.just_pressed(b));
-    // Tab or the controller's Select / View button opens the chooser.
+    let pad = |b: GamepadButton| pads.iter().any(|(_, p)| p.just_pressed(b));
+    // Tab or the controller's Select / View button opens the start menu.
     if keys.just_pressed(KeyCode::Tab) || pad(GamepadButton::Select) {
         chooser.0 = !chooser.0;
+        menu.step = 0;
+        menu.note.clear();
     }
     if chooser.0 {
-        let stick = pads.iter().map(|p| p.left_stick().x).fold(0.0f32, |a, b| if b.abs() > a.abs() { b } else { a });
-        let flick = stick.abs() > 0.6 && !*held;
-        *held = stick.abs() > 0.4;
-        let left = keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyA) || pad(GamepadButton::DPadLeft) || (flick && stick < 0.0);
-        let right = keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) || pad(GamepadButton::DPadRight) || (flick && stick > 0.0);
-        let updown = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyW) || keys.just_pressed(KeyCode::KeyS) || pad(GamepadButton::DPadUp) || pad(GamepadButton::DPadDown);
-        if updown {
-            game.players = 3 - game.players;
-            restart(&mut game);
+        // What each device is asking for this frame: (device, left, right, confirm, back).
+        let kp = |c: KeyCode| keys.just_pressed(c);
+        let mut asks = vec![(
+            Device::Keyboard,
+            kp(KeyCode::ArrowLeft) || kp(KeyCode::KeyA) || kp(KeyCode::ArrowUp) || kp(KeyCode::KeyW),
+            kp(KeyCode::ArrowRight) || kp(KeyCode::KeyD) || kp(KeyCode::ArrowDown) || kp(KeyCode::KeyS),
+            kp(KeyCode::Enter) || kp(KeyCode::Space),
+            kp(KeyCode::Backspace),
+        )];
+        for (e, p) in &pads {
+            let x = p.left_stick().x;
+            let was = held.contains(&e);
+            let flick = x.abs() > 0.6 && !was;
+            if x.abs() > 0.4 {
+                if !was {
+                    held.push(e);
+                }
+            } else {
+                held.retain(|h| *h != e);
+            }
+            asks.push((
+                Device::Pad(e),
+                p.just_pressed(GamepadButton::DPadLeft) || p.just_pressed(GamepadButton::DPadUp) || (flick && x < 0.0),
+                p.just_pressed(GamepadButton::DPadRight) || p.just_pressed(GamepadButton::DPadDown) || (flick && x > 0.0),
+                p.just_pressed(GamepadButton::South) || p.just_pressed(GamepadButton::Start),
+                p.just_pressed(GamepadButton::East),
+            ));
         }
-        if left {
-            skin.0 = 0;
-        }
-        if right {
-            skin.0 = 1;
-        }
-        if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || pad(GamepadButton::South) || pad(GamepadButton::Start) {
-            chooser.0 = false;
+        let pad_list: Vec<Entity> = pads.iter().map(|(e, _)| e).collect();
+        for (device, left, right, ok, back) in asks {
+            if menu.step == 0 {
+                // Step 0: anyone may choose the number of players. Whoever confirms becomes player 1.
+                if left || right {
+                    game.players = 3 - game.players;
+                    menu.note.clear();
+                }
+                if ok {
+                    // Player 2 gets a different device: another controller if there is one, otherwise the keyboard.
+                    let other = match device {
+                        Device::Keyboard => pad_list.first().map(|e| Device::Pad(*e)),
+                        Device::Pad(mine) => Some(pad_list.iter().find(|e| **e != mine).map(|e| Device::Pad(*e)).unwrap_or(Device::Keyboard)),
+                    };
+                    match (game.players, other) {
+                        (2, None) => menu.note = "Two players need a controller as well as the keyboard, or two controllers.".into(),
+                        (_, other) => {
+                            menu.p1 = device;
+                            menu.p2 = other.unwrap_or(Device::Keyboard);
+                            menu.note.clear();
+                            menu.step = 1;
+                            if game.world.players.len() != game.players {
+                                restart(&mut game);
+                            }
+                        }
+                    }
+                    break;
+                }
+            } else if device == menu.p1 || game.players == 1 {
+                // Step 1: only player 1 chooses. Player 2 is given the other character.
+                if left {
+                    skin.0 = 0;
+                }
+                if right {
+                    skin.0 = 1;
+                }
+                if back {
+                    menu.step = 0;
+                }
+                if ok {
+                    chooser.0 = false;
+                    break;
+                }
+            }
         }
     }
     if keys.just_pressed(KeyCode::F2) {
