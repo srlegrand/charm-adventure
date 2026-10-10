@@ -38,7 +38,7 @@
         hitstop_hit: 2,            // ticks (1/60 s) the world freezes on a hit,
         hitstop_kill: 3,           // on a kill,
         hitstop_hurt: 8,           // and when the player is hurt
-        // The weapon is a line from the shoulder swept through an arc; hits follow it exactly.
+        // A swing hits everything inside the crescent that is drawn for it: weapon_length plus a little, 72 degrees either side.
         weapon_length: 58.0,
         weapon_thickness: 7.0,     // half-thickness of that line
         shoulder_height: 20.0,     // swing pivot above the body centre
@@ -48,7 +48,8 @@
         swing_down: (-15.0, -165.0),
         attack_damage: 5,
         attack_recoil: 160.0,
-        pogo_speed: 640.0,
+        pogo_speed: 640.0,         // the bounce when a dive hits something
+        dive_speed: 1500.0,        // how fast the mid-air dive attack falls
 
         invuln_time: 1.1,
         hitstun_time: 0.22,

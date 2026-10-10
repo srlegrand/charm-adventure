@@ -601,13 +601,21 @@ fn net_tick(game: &mut Game, juice: &mut Juice, story: &mut Story, net: &mut net
     if !net.playing() {
         return;
     }
-    net.lock.capture(game.input[0]);
+    net.ticks += 1;
+    // If this Deck's clock runs ahead of the other's, it drops a tick now and then so neither has to guess far.
+    let ahead = net.lock.sent as i64 - net.lock.remote_sent as i64;
+    if !(ahead > 3 && net.ticks % 8 == 0) {
+        net.lock.capture(game.input[0]);
+    }
     net.send();
-    let mut steps = 0;
-    // Normally one frame per tick. If this Deck has fallen behind, it plays a few extra to catch up.
-    while steps == 0 || (steps < 4 && net.lock.backlog() > net::DELAY + 1) {
+
+    // 1. The settled world: play every frame for which both Decks' buttons are known.
+    if let Some(w) = net.settled.take() {
+        game.world = w;
+    }
+    for _ in 0..60 {
         let Some(frames) = net.lock.next() else { break };
-        steps += 1;
+        let frame = net.lock.frame - 1;
         for (who, f) in frames.iter().enumerate() {
             match f.cmd {
                 net::CMD_PAUSE => net.paused[who] = f.a == 1,
@@ -627,12 +635,15 @@ fn net_tick(game: &mut Game, juice: &mut Juice, story: &mut Story, net: &mut net
         }
         if !net.paused.iter().chain(&net.asking).any(|x| *x) {
             game.world.step(&[frames[0].input, frames[1].input], &game.tuning);
-            juice.events.extend(game.world.events.drain(..));
+            let events: Vec<sim::Event> = game.world.events.drain(..).collect();
+            if frame > net.shown {
+                net.shown = frame;
+                juice.events.extend(events);
+            }
             if let Some(to) = game.world.exit.take() {
                 goto_level(game, &to);
             }
         }
-        let frame = net.lock.frame - 1;
         if frame % 30 == 0 {
             let w = &game.world;
             let mut h = w.tick;
@@ -640,6 +651,26 @@ fn net_tick(game: &mut Game, juice: &mut Juice, story: &mut Story, net: &mut net
                 h = h.wrapping_mul(31).wrapping_add(p.x.to_bits()).wrapping_mul(31).wrapping_add(p.y.to_bits()).wrapping_add(p.hp as u32);
             }
             net.lock.note_hash(frame, h.wrapping_mul(31).wrapping_add(w.enemies.len() as u32));
+        }
+    }
+    net.settled = Some(game.world.clone());
+
+    // 2. The world on screen: the settled one, run forward to now on this Deck's real buttons
+    //    and a guess at the other's. It is thrown away and rebuilt next tick.
+    if !net.paused.iter().chain(&net.asking).any(|x| *x) {
+        let me = net.lock.me;
+        for frame in net.lock.frame..=net.lock.sent {
+            let Some(mine) = net.lock.mine(frame) else { break };
+            let theirs = net.lock.theirs(frame);
+            let inputs = if me == 0 { [mine.input, theirs] } else { [theirs, mine.input] };
+            game.world.step(&inputs, &game.tuning);
+            let events: Vec<sim::Event> = game.world.events.drain(..).collect();
+            if frame > net.shown {
+                net.shown = frame;
+                juice.events.extend(events);
+            }
+            // Leaving the level waits until both Decks agree it happened.
+            game.world.exit = None;
         }
     }
     if let Some(f) = net.lock.desync {
@@ -1044,12 +1075,17 @@ fn animate(
             pose.flip = FLIP_TIME;
         }
         pose.air_jumps = p.air_jumps_left;
-        if p.on_ground || p.dash_t > 0.0 || p.hitstun > 0.0 {
+        if p.on_ground || p.dash_t > 0.0 || p.hitstun > 0.0 || p.dive {
             pose.flip = 0.0;
         }
         pose.flip = (pose.flip - dt).max(0.0);
         if pose.flip > 0.0 {
             g = [1.5, 1.7, -0.7, 0.5, -1.2, 0.0, 0.92, 0.92];
+            snap = 90.0;
+        }
+        if p.dive {
+            // Arrow-straight, legs tucked, weapon first.
+            g = [0.5, 0.8, 0.05, 0.25, 0.0, 0.0, 0.84, 1.22];
             snap = 90.0;
         }
         // The proposal: Simon goes down on one knee, facing Charm, and holds out the ring.
@@ -1723,6 +1759,16 @@ fn juice(
         }
     };
 
+    // A dive trails speed lines straight up behind it, as wide as what it hits.
+    for p in &w.players {
+        if p.dive {
+            for _ in 0..2 {
+                let x = p.x + (juice.rand() - 0.5) * (t.width + 8.0);
+                let len = 40.0 + juice.rand() * 50.0;
+                spawn_fx(&mut commands, Sprite::from_color(white, Vec2::new(2.5, len)), Vec2::new(x, p.y + t.height * 0.4 + len * 0.5), 3.4, 0.0, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.12, max: 0.12, spin: 0.0, grow: -2.0 });
+            }
+        }
+    }
     for ev in std::mem::take(&mut juice.events) {
         match ev {
             sim::Event::Swing { player } => {
@@ -1733,7 +1779,8 @@ fn juice(
                 let mut sprite = Sprite::from_image(art.slash.clone());
                 sprite.color = Color::srgb(1.9, 1.8, 1.6);
                 light(&mut commands, Vec2::new(p.x + p.facing * 30.0, p.y + lift), 240.0, 0.12, 0.14);
-                sprite.custom_size = Some(Vec2::splat((t.weapon_length + 10.0) / 117.0 * 256.0));
+                // Sized so the crescent, fully grown, ends exactly where the hit ends.
+                sprite.custom_size = Some(Vec2::splat((t.weapon_length + sim::SLASH_EXTRA + t.weapon_thickness) / 1.083 / 117.0 * 256.0));
                 // The crescent art thickens toward its leading end; flip it so that end leads the swing.
                 sprite.flip_y = (to < from) != (p.facing < 0.0);
                 let rot = if p.facing < 0.0 { std::f32::consts::PI - mid } else { mid };
@@ -1747,7 +1794,8 @@ fn juice(
                     let pos = Vec2::new(p.x, p.y);
                     for k in 0..2 {
                         let mut sprite = Sprite::from_image(art.slash.clone());
-                        sprite.custom_size = Some(Vec2::splat(t.height * 1.5));
+                        // Fully grown, the whirl is as wide as the flip's hit.
+                        sprite.custom_size = Some(Vec2::splat(t.height * sim::FLIP_RADIUS / 1.226 / 117.0 * 256.0));
                         sprite.color = Color::srgb(1.9, 1.8, 1.6);
                         sprite.flip_y = p.facing > 0.0;
                         let id = spawn_fx(&mut commands, sprite, pos, 3.5, k as f32 * std::f32::consts::PI, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.34, max: 0.34, spin: -p.facing * 22.0, grow: 0.6 });
@@ -1760,6 +1808,22 @@ fn juice(
                     light(&mut commands, pos, 220.0, 0.14, 0.2);
                     burst(&mut commands, &mut juice, pos - Vec2::Y * t.height * 0.4, 8, 220.0, 16.0, white, 0.0);
                 }
+            }
+            sim::Event::Dive { player } => {
+                if let Some(p) = w.players.get(player) {
+                    light(&mut commands, Vec2::new(p.x, p.y), 200.0, 0.12, 0.16);
+                    burst(&mut commands, &mut juice, Vec2::new(p.x, p.y + t.height * 0.4), 6, 200.0, 18.0, white, 0.0);
+                }
+            }
+            sim::Event::Slam { x, y } => {
+                juice.shake = juice.shake.max(5.0);
+                let mut ring = Sprite::from_image(art.ring.clone());
+                // Fully grown, the ring is as wide as the landing's hit.
+                ring.custom_size = Some(Vec2::new(sim::SLAM_RADIUS * 2.0 / 2.6, 12.0));
+                ring.color = Color::srgb(1.9, 1.8, 1.5);
+                spawn_fx(&mut commands, ring, Vec2::new(x, y + 4.0), 1.9, 0.0, Fx { vel: Vec2::ZERO, gravity: 0.0, drag: 0.0, life: 0.2, max: 0.2, spin: 0.0, grow: 4.8 });
+                light(&mut commands, Vec2::new(x, y), 260.0, 0.18, 0.2);
+                burst(&mut commands, &mut juice, Vec2::new(x, y + 6.0), 12, 380.0, 20.0, white, 0.0);
             }
             sim::Event::Dash { player } => {
                 if let Some(p) = w.players.get(player) {

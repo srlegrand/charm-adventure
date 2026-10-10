@@ -4,16 +4,21 @@
 //! When two hear each other, the one with the lower number hosts (player 1) and tells the other which level and
 //! which character, and both start the level from scratch at frame 0.
 //!
-//! Staying in step: buttons pressed now are used a few frames later (DELAY), which gives them time to cross the
-//! network. A frame is only played once both Decks' buttons for it are known, so the two worlds can never differ;
-//! if the network hiccups, both simply wait. Every packet repeats the last frames, so a lost packet costs nothing.
+//! Staying in step, without waiting: each Deck plays its own buttons at once and guesses that the other player
+//! is still doing what they were last seen doing. Under that it keeps a second copy of the world, the settled one,
+//! which only advances through frames where both Decks' buttons are really known. Every tick the picture is
+//! rebuilt from the settled world plus the guesses, so a wrong guess is corrected a few frames later and the two
+//! Decks can never drift apart. Every packet repeats the last frames, so a lost packet costs nothing.
+//! Only when the other Deck has been silent for MAX_AHEAD frames does the game wait.
 use crate::sim::Input;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Instant;
 
-/// Frames between pressing a button and it taking effect: 3 frames is 50 ms.
-pub const DELAY: u32 = 3;
+/// Frames between pressing a button and it being used. One frame: the press is on screen the tick it is made.
+pub const DELAY: u32 = 1;
+/// How far this Deck may play ahead of what the other has confirmed: 12 frames is 200 ms.
+pub const MAX_AHEAD: u32 = 12;
 const PORTS: [u16; 2] = [47800, 47801];
 const MAGIC: &[u8; 4] = b"CHRM";
 const PROTO: u8 = 1;
@@ -63,7 +68,10 @@ pub struct Lockstep {
     pub me: usize,
     /// The next frame to play.
     pub frame: u32,
-    sent: u32,
+    /// The newest frame this Deck has pressed buttons for, and the newest the other Deck says it has.
+    pub sent: u32,
+    pub remote_sent: u32,
+    held: Frame,
     local: BTreeMap<u32, Frame>,
     remote: BTreeMap<u32, Frame>,
     pending: VecDeque<(u8, u8, u8)>,
@@ -77,7 +85,7 @@ impl Lockstep {
     pub fn new(me: usize) -> Self {
         // Nothing is pressed during the first DELAY frames.
         let local = (0..DELAY).map(|f| (f, Frame::default())).collect();
-        Lockstep { me, frame: 0, sent: DELAY - 1, local, remote: BTreeMap::new(), pending: VecDeque::new(), hashes: BTreeMap::new(), remote_hashes: BTreeMap::new(), desync: None }
+        Lockstep { me, frame: 0, sent: DELAY - 1, remote_sent: 0, held: Frame::default(), local, remote: BTreeMap::new(), pending: VecDeque::new(), hashes: BTreeMap::new(), remote_hashes: BTreeMap::new(), desync: None }
     }
 
     /// Ask for something to happen on both Decks at the same frame.
@@ -85,9 +93,9 @@ impl Lockstep {
         self.pending.push_back((cmd, a, b));
     }
 
-    /// Record what is pressed now, for a frame DELAY ahead. Does nothing while waiting for the other Deck.
+    /// Record what is pressed now. Does nothing once this Deck is MAX_AHEAD frames past the settled world.
     pub fn capture(&mut self, input: Input) {
-        if self.sent < self.frame + DELAY {
+        if self.sent < self.frame + MAX_AHEAD {
             let (cmd, a, b) = self.pending.pop_front().unwrap_or((0, 0, 0));
             self.sent += 1;
             self.local.insert(self.sent, Frame { input: quantise(input), cmd, a, b });
@@ -118,6 +126,7 @@ impl Lockstep {
         if b.len() < 5 + count as usize * 6 + 8 || count > last + 1 {
             return;
         }
+        self.remote_sent = self.remote_sent.max(last);
         for k in 0..count {
             let f = last + 1 - count + k;
             if f >= self.frame {
@@ -138,6 +147,7 @@ impl Lockstep {
     pub fn next(&mut self) -> Option<[Frame; 2]> {
         let (l, r) = (*self.local.get(&self.frame)?, *self.remote.get(&self.frame)?);
         let done = self.frame;
+        self.held = r;
         self.frame += 1;
         self.remote.retain(|f, _| *f > done);
         // Keep what the other Deck may still need repeated.
@@ -145,7 +155,18 @@ impl Lockstep {
         Some(if self.me == 0 { [l, r] } else { [r, l] })
     }
 
+    /// This Deck's own buttons for a frame it has not settled yet.
+    pub fn mine(&self, frame: u32) -> Option<Frame> {
+        self.local.get(&frame).copied()
+    }
+
+    /// The other Deck's buttons for a frame: the real ones if they have arrived, otherwise the last ones seen.
+    pub fn theirs(&self, frame: u32) -> Input {
+        self.remote.range(..=frame).next_back().map(|(_, f)| f.input).unwrap_or(self.held.input)
+    }
+
     /// How many frames from the other Deck are waiting to be played.
+    #[allow(dead_code)]
     pub fn backlog(&self) -> u32 {
         self.remote.keys().next_back().map(|f| f + 1 - self.frame.min(f + 1)).unwrap_or(0)
     }
@@ -202,13 +223,18 @@ pub struct Net {
     pub paused: [bool; 2],
     pub asking: [bool; 2],
     pub note: String,
+    /// The world as of the last frame both Decks agree on. The one on screen runs ahead of it on guesses.
+    pub settled: Option<crate::sim::World>,
+    /// The newest frame whose effects (sparks, shakes) have been shown, so none is shown twice.
+    pub shown: u32,
+    pub ticks: u32,
 }
 
 impl Default for Net {
     fn default() -> Self {
         Net {
             phase: Phase::Off, socket: None, id: 0, peer: None, peer_id: 0, session: 0, lock: Lockstep::new(0), skin: 0, level: String::new(),
-            beacon: None, heard: Instant::now(), got_input: false, paused: [false; 2], asking: [false; 2], note: String::new(),
+            beacon: None, heard: Instant::now(), got_input: false, paused: [false; 2], asking: [false; 2], note: String::new(), settled: None, shown: 0, ticks: 0,
         }
     }
 }

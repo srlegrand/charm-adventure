@@ -60,8 +60,8 @@ The first run sets up a build container and compiles everything, which takes a l
 | Action | Controller | Keyboard and mouse |
 |---|---|---|
 | Move | Left stick / D-pad | Arrows / WASD |
-| Jump | A | Space / Z |
-| Attack (hold up or down to aim) | X | X / J / left click |
+| Jump (again in the air: a flip that hits all round) | A | Space / Z |
+| Attack (hold up to swing upward; in the air it is a dive straight down) | X | X / J / left click |
 | Dash (hold to sprint) | Right trigger | C / K / Left Shift / right click |
 | Send 10 flowers to your partner as a heart | B | G / Q |
 | Pause menu: restart, players, split screen, full screen, quit | Start | |

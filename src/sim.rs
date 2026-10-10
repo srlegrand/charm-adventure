@@ -69,11 +69,27 @@ pub struct PlayerTuning {
     pub attack_damage: i32,
     pub attack_recoil: f32,
     pub pogo_speed: f32,
+    /// How fast the dive attack falls.
+    #[serde(default = "default_dive_speed")]
+    pub dive_speed: f32,
     pub invuln_time: f32,
     pub hitstun_time: f32,
     pub knockback_x: f32,
     pub knockback_y: f32,
 }
+
+fn default_dive_speed() -> f32 {
+    1500.0
+}
+
+/// The slash crescent that is drawn covers this many degrees either side of the swing's middle,
+/// and reaches this far past the weapon. Hits use the same shape, so what glows is what hits.
+pub const SLASH_HALF_SPAN: f32 = 72.0;
+pub const SLASH_EXTRA: f32 = 10.0;
+/// The whirl of the mid-air flip, as a share of the player's height. It hits everything inside it.
+pub const FLIP_RADIUS: f32 = 0.83;
+/// How far around the feet a dive hits when it lands.
+pub const SLAM_RADIUS: f32 = 56.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Behaviour {
@@ -195,6 +211,11 @@ pub struct Player {
     pub attack_buf: f32,
     /// A swing started this tick and has not been resolved yet.
     pub swing_fresh: bool,
+    /// Diving straight down, weapon first, until something is hit or the ground arrives.
+    pub dive: bool,
+    /// The flip started, or the dive landed, this tick: each hits once, all round.
+    pub flip_fresh: bool,
+    pub slam_fresh: bool,
     /// Flowers collected.
     pub score: u32,
     /// Flowers in hand. Ten of them can be sent to the partner, where they become a heart.
@@ -232,6 +253,9 @@ pub struct Enemy {
 #[derive(Clone, Debug)]
 pub enum Event {
     Swing { player: usize },
+    /// A dive attack began, and where one landed.
+    Dive { player: usize },
+    Slam { x: f32, y: f32 },
     Dash { player: usize },
     /// The second jump, in mid-air.
     AirJump { player: usize },
@@ -336,7 +360,7 @@ impl Player {
             x, y, px: x, py: y, vx: 0.0, vy: 0.0, facing: 1.0, on_ground: false, wall: 0,
             hp: t.max_hp, coyote: 0.0, jump_buf: 0.0, jumping: false, air_jumps_left: t.air_jumps,
             air_dash_ready: true, dash_t: 0.0, dash_cd: 0.0, sprinting: false, wall_lock: 0.0,
-            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, score: 0, flowers: 0, combo: 0, combo_t: 0.0, swing_alt: false, down: false, safe_x: x, safe_y: y,
+            attack_t: 0.0, attack_cd: 0.0, attack_dir: AttackDir::Side, invuln: 0.0, hitstun: 0.0, attack_buf: 0.0, swing_fresh: false, dive: false, flip_fresh: false, slam_fresh: false, score: 0, flowers: 0, combo: 0, combo_t: 0.0, swing_alt: false, down: false, safe_x: x, safe_y: y,
             prev: Input::default(),
         }
     }
@@ -351,7 +375,8 @@ impl Player {
             AttackDir::Side if self.swing_alt => (t.swing_side.1, t.swing_side.0),
             AttackDir::Side => t.swing_side,
             AttackDir::Up => t.swing_up,
-            AttackDir::Down => t.swing_down,
+            // The dive holds the weapon straight down.
+            AttackDir::Down => (-90.0, -90.0),
         }
     }
 
@@ -364,10 +389,14 @@ impl Player {
     }
 
     fn weapon_at(&self, t: &PlayerTuning, angle: f32) -> ((f32, f32), (f32, f32)) {
+        self.reach_at(t, angle, t.weapon_length)
+    }
+
+    fn reach_at(&self, t: &PlayerTuning, angle: f32, length: f32) -> ((f32, f32), (f32, f32)) {
         let lift = if self.attack_dir == AttackDir::Down { -t.shoulder_height * 0.5 } else { t.shoulder_height };
         let a = angle.to_radians();
         let pivot = (self.x, self.y + lift);
-        (pivot, (pivot.0 + a.cos() * t.weapon_length * self.facing, pivot.1 + a.sin() * t.weapon_length))
+        (pivot, (pivot.0 + a.cos() * length * self.facing, pivot.1 + a.sin() * length))
     }
 
     /// The weapon line right now (pivot, tip) and its swing angle, if a swing is active.
@@ -380,11 +409,12 @@ impl Player {
         Some((p, q, angle))
     }
 
-    /// The weapon line at steps across the whole arc. The hit lands on the first tick of the swing,
-    /// everywhere the arc will pass; the drawn swing then catches up within a few frames.
+    /// Where a swing hits: the whole crescent that is drawn for it, as a fan of lines from the shoulder.
+    /// The hit lands on the first tick of the swing; the drawn weapon catches up within a few frames.
     fn weapon_arc(&self, t: &PlayerTuning) -> [((f32, f32), (f32, f32)); 9] {
         let (from, to) = self.arc(t);
-        std::array::from_fn(|i| self.weapon_at(t, from + (to - from) * i as f32 / 8.0))
+        let mid = (from + to) / 2.0;
+        std::array::from_fn(|i| self.reach_at(t, mid - SLASH_HALF_SPAN + SLASH_HALF_SPAN * 2.0 * i as f32 / 8.0, t.weapon_length + SLASH_EXTRA))
     }
 
     /// The body as an upright capsule: a centre line and a radius.
@@ -531,7 +561,7 @@ impl World {
             if p.combo_t <= 0.0 {
                 p.combo = 0;
             }
-            let control = p.hitstun <= 0.0;
+            let control = p.hitstun <= 0.0 && !p.dive;
             let sliding = p.wall_sliding(&inp);
 
             if jump_pressed {
@@ -581,7 +611,6 @@ impl World {
                 p.vy = (p.vy - t.gravity * DT).max(-t.max_fall_speed);
                 if sliding {
                     p.vy = p.vy.max(-t.wall_slide_speed);
-                    p.facing = -(p.wall as f32);
                 }
             }
 
@@ -598,6 +627,7 @@ impl World {
                 } else if p.air_jumps_left > 0 {
                     p.air_jumps_left -= 1;
                     p.vy = t.air_jump_speed;
+                    p.flip_fresh = true;
                     self.events.push(Event::AirJump { player: i });
                 } else {
                     jumped = false;
@@ -617,28 +647,40 @@ impl World {
                 p.jumping = false;
             }
 
-            // Attack
+            // Attack. On the ground, or holding up: a swing. In the air: a dive, straight down.
             if control && p.attack_buf > 0.0 && p.attack_cd <= 0.0 {
                 p.attack_buf = 0.0;
-                p.swing_fresh = true;
-                self.events.push(Event::Swing { player: i });
-                p.attack_dir = if inp.y > 0.5 {
-                    AttackDir::Up
-                } else if inp.y < -0.5 && !p.on_ground {
-                    AttackDir::Down
+                if !p.on_ground && inp.y <= 0.5 {
+                    p.attack_dir = AttackDir::Down;
+                    p.dive = true;
+                    p.dash_t = 0.0;
+                    p.jumping = false;
+                    self.events.push(Event::Dive { player: i });
                 } else {
-                    AttackDir::Side
-                };
-                if p.attack_dir == AttackDir::Side {
-                    p.swing_alt = !p.swing_alt;
+                    p.swing_fresh = true;
+                    self.events.push(Event::Swing { player: i });
+                    p.attack_dir = if inp.y > 0.5 { AttackDir::Up } else { AttackDir::Side };
+                    if p.attack_dir == AttackDir::Side {
+                        p.swing_alt = !p.swing_alt;
+                    }
                 }
                 p.attack_t = t.attack_time;
                 p.attack_cd = t.attack_cooldown;
+            }
+            if p.dive {
+                (p.vx, p.vy) = (0.0, -t.dive_speed);
+                p.attack_t = t.attack_time;
             }
 
             let (ground, wall) = move_body(&mut p.x, &mut p.y, &mut p.vx, &mut p.vy, t.width, t.height, solids);
             p.on_ground = ground;
             p.wall = wall;
+            if p.dive && ground {
+                p.dive = false;
+                p.attack_t = 0.0;
+                p.slam_fresh = true;
+                self.events.push(Event::Slam { x: p.x, y: p.y - t.height / 2.0 });
+            }
             if ground {
                 p.coyote = t.coyote_time;
                 p.air_jumps_left = t.air_jumps;
@@ -678,6 +720,7 @@ impl World {
                 p.hp = 0;
                 p.down = true;
                 (p.vx, p.vy, p.dash_t, p.attack_t) = (0.0, 0.0, 0.0, 0.0);
+                p.dive = false;
                 self.events.push(Event::Down { player: i });
             }
             p.prev = inp;
@@ -733,19 +776,36 @@ impl World {
 
         // Player swings against enemies, then enemy contact against players.
         for (i, p) in self.players.iter_mut().enumerate() {
+            // Everything this player hits this tick: (lines, half-thickness, kind).
+            // Kinds: 0 side swing, 1 up swing, 2 dive, 3 flip, 4 dive landing.
+            let mut strikes: Vec<(Vec<((f32, f32), (f32, f32))>, f32, u8)> = Vec::new();
             if p.swing_fresh {
                 p.swing_fresh = false;
-                let sweep = p.weapon_arc(t);
+                strikes.push((p.weapon_arc(t).to_vec(), t.weapon_thickness, if p.attack_dir == AttackDir::Up { 1 } else { 0 }));
+            }
+            if p.dive {
+                strikes.push((vec![((p.x, p.y), (p.x, p.y - t.height / 2.0 - 34.0))], t.width * 0.5 + 4.0, 2));
+            }
+            if p.flip_fresh {
+                p.flip_fresh = false;
+                strikes.push((vec![((p.x, p.y), (p.x, p.y))], t.height * FLIP_RADIUS, 3));
+            }
+            if p.slam_fresh {
+                p.slam_fresh = false;
+                let feet = (p.x, p.y - t.height / 2.0);
+                strikes.push((vec![(feet, feet)], SLAM_RADIUS, 4));
+            }
+            for (sweep, thickness, kind) in strikes {
                 let mut connected = false;
                 let mut killed = false;
                 for e in self.enemies.iter_mut() {
                     let Some(et) = tuning.enemies.get(&e.kind) else { continue };
                     let body = e.body(et);
-                    if !sweep.iter().any(|(a, b)| body.touches_line(*a, *b, t.weapon_thickness)) {
+                    if e.hp <= 0 || !sweep.iter().any(|(a, b)| body.touches_line(*a, *b, thickness)) {
                         continue;
                     }
                     e.hp -= t.attack_damage;
-                    let dir = if p.attack_dir == AttackDir::Side { p.facing } else { 0.0 };
+                    let dir = if kind == 0 { p.facing } else { 0.0 };
                     if e.hp <= 0 {
                         killed = true;
                         p.combo += 1;
@@ -762,11 +822,13 @@ impl World {
                     }
                     e.flash = 0.12;
                     e.stun = 0.25;
-                    match p.attack_dir {
-                        AttackDir::Side => (e.vx, e.vy) = (p.facing * et.knockback, 120.0),
-                        AttackDir::Up => (e.vx, e.vy) = (0.0, et.knockback),
-                        AttackDir::Down => (e.vx, e.vy) = (0.0, 0.0),
-                    }
+                    let away = if e.x < p.x { -1.0 } else { 1.0 };
+                    (e.vx, e.vy) = match kind {
+                        0 => (p.facing * et.knockback, 120.0),
+                        1 => (0.0, et.knockback),
+                        2 => (0.0, 0.0),
+                        _ => (away * et.knockback, 200.0),
+                    };
                     connected = true;
                 }
                 if killed {
@@ -775,16 +837,18 @@ impl World {
                     p.air_dash_ready = true;
                 }
                 if connected {
-                    match p.attack_dir {
-                        AttackDir::Side if killed => {}
-                        AttackDir::Side => p.vx = -p.facing * t.attack_recoil,
-                        AttackDir::Up => {}
-                        AttackDir::Down => {
+                    match kind {
+                        0 if !killed => p.vx = -p.facing * t.attack_recoil,
+                        2 => {
+                            // The dive bounces off whatever it hits, ready to jump, dash or dive again.
+                            p.dive = false;
+                            p.attack_t = 0.0;
                             p.vy = t.pogo_speed;
                             p.jumping = false;
                             p.air_dash_ready = true;
                             p.air_jumps_left = t.air_jumps;
                         }
+                        _ => {}
                     }
                 }
             }
@@ -799,6 +863,7 @@ impl World {
                         p.invuln = t.invuln_time;
                         p.hitstun = t.hitstun_time;
                         p.dash_t = 0.0;
+                        p.dive = false;
                         p.vx = if p.x < e.x { -t.knockback_x } else { t.knockback_x };
                         p.vy = t.knockback_y;
                         break;
@@ -1009,6 +1074,85 @@ mod tests {
         }
         assert!(w.enemies.is_empty());
         assert!(w.players[0].vy > 0.0);
+        assert!(!w.players[0].dive);
+    }
+
+    fn foe(w: &mut World, t: &Tuning, dx: f32, dy: f32) {
+        let et = &t.enemies["cherry"];
+        let (x, y) = (w.players[0].x + dx, w.players[0].y + dy);
+        w.enemies.push(Enemy { kind: "cherry".into(), x, y, px: x, py: y, vx: 0.0, vy: 0.0, dir: 1.0, hp: 1, on_ground: true, timer: 0.0, stun: 9.0, flash: 0.0 });
+        let _ = et;
+    }
+
+    /// A swing hits exactly as far as its crescent is drawn: inside it dies, just outside it lives.
+    #[test]
+    fn a_swing_reaches_as_far_as_its_crescent() {
+        let (mut w, t) = setup();
+        let reach = t.player.weapon_length + SLASH_EXTRA + t.player.weapon_thickness + t.enemies["cherry"].width / 2.0;
+        foe(&mut w, &t, reach - 6.0, t.player.shoulder_height);
+        foe(&mut w, &t, reach + 14.0, t.player.shoulder_height);
+        w.step(&[Input { attack: true, ..Default::default() }], &t);
+        for _ in 0..6 {
+            w.step(&[Input::default()], &t);
+        }
+        assert_eq!(w.enemies.len(), 1, "the near one dies, the far one lives");
+        assert!(w.enemies[0].x > w.players[0].x + reach);
+    }
+
+    /// The mid-air flip hits everything inside its whirl, on both sides.
+    #[test]
+    fn the_flip_is_an_attack() {
+        let (mut w, t) = setup();
+        w.step(&[Input { jump: true, ..Default::default() }], &t);
+        for _ in 0..12 {
+            w.step(&[Input::default()], &t);
+        }
+        assert!(!w.players[0].on_ground);
+        foe(&mut w, &t, 45.0, 0.0);
+        foe(&mut w, &t, -45.0, 10.0);
+        foe(&mut w, &t, 140.0, 0.0);
+        w.step(&[Input { jump: true, ..Default::default() }], &t);
+        for _ in 0..6 {
+            w.step(&[Input::default()], &t);
+        }
+        assert_eq!(w.enemies.len(), 1, "both neighbours die, the distant one lives");
+    }
+
+    /// Attack in the air: straight down, fast, and it hits around the feet on landing.
+    #[test]
+    fn the_dive_falls_straight_and_slams() {
+        let (mut w, t) = setup();
+        let x0 = w.players[0].x;
+        w.players[0].y += 300.0;
+        w.players[0].on_ground = false;
+        w.players[0].vx = 200.0;
+        foe(&mut w, &t, 40.0, -300.0);
+        w.step(&[Input { x: 1.0, attack: true, ..Default::default() }], &t);
+        assert!(w.players[0].dive);
+        let mut slammed = false;
+        for _ in 0..40 {
+            w.step(&[Input { x: 1.0, ..Default::default() }], &t);
+            slammed |= w.events.iter().any(|e| matches!(e, Event::Slam { .. }));
+            if w.players[0].on_ground {
+                break;
+            }
+        }
+        assert!(slammed && w.players[0].on_ground && !w.players[0].dive);
+        assert!((w.players[0].x - x0).abs() < 12.0, "it drifted sideways: {}", w.players[0].x - x0);
+        assert!(w.enemies.is_empty(), "the landing should have hit the tomato beside it");
+    }
+
+    /// Leaning on a wall in the air must not turn the player round.
+    #[test]
+    fn a_wall_does_not_turn_you_round() {
+        let (mut w, t) = setup();
+        w.players[0].x = 900.0 - t.player.width / 2.0 - 1.0;
+        w.players[0].y = 300.0;
+        w.players[0].on_ground = false;
+        for _ in 0..30 {
+            w.step(&[Input { x: 1.0, ..Default::default() }], &t);
+            assert_eq!(w.players[0].facing, 1.0);
+        }
     }
 
     #[test]
