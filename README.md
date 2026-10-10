@@ -76,6 +76,12 @@ The game is made for controllers; everything can be done from one. Pick "2 PLAYE
 
 Kill tomatoes to collect flowers into your bouquet. Send ten flowers to your partner and they become a heart: one life for them. You cannot make hearts for yourself. A player with no lives left goes down until their partner sends them a heart.
 
+### Two Decks
+
+Each player on their own Steam Deck, both on the same network (the same Wi-Fi, or one Deck's hotspot). On both Decks choose "2 PLAYERS, TWO DECKS" in the menu, then a character. The Decks find each other by themselves; there is nothing to type. Whoever is found first as host plays the character they chose, the other player gets the other one. Each Deck shows its own player.
+
+The two Decks run the same game and only swap button presses, so both must be on the same version: use the launcher script above on both.
+
 ## Make it yours
 
 Everything is plain text and reloads while the game runs:
@@ -108,6 +114,7 @@ sudo apt install libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 ## Layout
 
 - `src/sim.rs`: the gameplay simulation. It takes button presses and nothing else, so two machines can stay in step.
+- `src/net.rs`: two Decks finding each other and staying in step.
 - `src/main.rs`: window, input, drawing, effects, speech.
 - `src/bin/charm_story.rs`: the story editor.
 - `src/story_data.rs`: the story as kept on disk, shared by both.

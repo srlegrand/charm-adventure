@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Charm Adventure in Tomato Land - movement slice.
+mod net;
 mod sim;
 #[allow(dead_code)]
 mod story_data;
@@ -148,6 +149,8 @@ enum Device {
 /// Whoever confirms step 0 is player 1, on the device they pressed it with.
 #[derive(Resource)]
 struct Menu {
+    /// Two players on two Decks rather than one screen.
+    two_decks: bool,
     step: u8,
     p1: Device,
     p2: Device,
@@ -340,13 +343,14 @@ fn main() {
         .insert_resource(game)
         .insert_resource(Skin(0))
         .insert_resource(Chooser(true))
-        .insert_resource(Menu { step: 0, p1: Device::Keyboard, p2: Device::Keyboard, note: String::new() })
+        .insert_resource(Menu { two_decks: false, step: 0, p1: Device::Keyboard, p2: Device::Keyboard, note: String::new() })
         .init_resource::<Art>()
         .init_resource::<ShowShapes>()
         .init_resource::<Juice>()
         .init_resource::<Story>()
         .init_resource::<Stats>()
         .init_resource::<Pause>()
+        .init_resource::<net::Net>()
         .init_resource::<GeoStore>()
         .insert_resource(Views { pos: [Vec2::ZERO; 2], half: [Vec2::new(432.0, 270.0); 2], split: false, want_split: true })
         .add_systems(Startup, setup)
@@ -516,7 +520,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, game: Res<Game>, mut 
     }
 }
 
-fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, pads: Query<(Entity, &Gamepad)>, menu: Res<Menu>, mut game: ResMut<Game>) {
+fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>, pads: Query<(Entity, &Gamepad)>, menu: Res<Menu>, net: Res<net::Net>, mut game: ResMut<Game>) {
     let k = |codes: &[KeyCode]| codes.iter().any(|c| keys.pressed(*c));
     let keyboard = sim::Input {
         x: k(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32 - k(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
@@ -559,14 +563,18 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButto
     };
     // One player: every device drives player 1.
     // Two players: each player has exactly the device chosen in the start menu, and nothing else.
-    game.input = if game.players < 2 {
+    game.input = if game.players < 2 || net.on() {
         [pads.iter().fold(keyboard, |acc, (_, p)| merge(acc, from_pad(p))), sim::Input::default()]
     } else {
         [of(menu.p1), of(menu.p2)]
     };
 }
 
-fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, story: Res<Story>, pause: Res<Pause>) {
+fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>, mut story: ResMut<Story>, pause: Res<Pause>, mut net: ResMut<net::Net>, mut skin: ResMut<Skin>) {
+    if net.on() {
+        net_tick(&mut game, &mut juice, &mut story, &mut net, &mut skin);
+        return;
+    }
     // The world holds still in the menu and while a story choice is on screen.
     if chooser.0 || story.ask.is_some() || pause.open {
         return;
@@ -576,6 +584,85 @@ fn tick(mut game: ResMut<Game>, mut juice: ResMut<Juice>, chooser: Res<Chooser>,
     juice.events.extend(g.world.events.drain(..));
     if let Some(to) = g.world.exit.take() {
         goto_level(g, &to);
+    }
+}
+
+/// One tick of a two-Deck game: swap buttons with the other Deck and play every frame both sides have.
+fn net_tick(game: &mut Game, juice: &mut Juice, story: &mut Story, net: &mut net::Net, skin: &mut Skin) {
+    if let Some(start) = net.poll() {
+        // Found each other: both Decks start the same level from scratch, with the host's choice of character.
+        game.players = 2;
+        game.level = start.level;
+        restart(game);
+        game.stamps = stamps(&game.dir, &game.level);
+        skin.0 = start.skin as usize % 2;
+        juice.events.clear();
+    }
+    if !net.playing() {
+        return;
+    }
+    net.lock.capture(game.input[0]);
+    net.send();
+    let mut steps = 0;
+    // Normally one frame per tick. If this Deck has fallen behind, it plays a few extra to catch up.
+    while steps == 0 || (steps < 4 && net.lock.backlog() > net::DELAY + 1) {
+        let Some(frames) = net.lock.next() else { break };
+        steps += 1;
+        for (who, f) in frames.iter().enumerate() {
+            match f.cmd {
+                net::CMD_PAUSE => net.paused[who] = f.a == 1,
+                net::CMD_ASK => net.asking[who] = f.a == 1,
+                net::CMD_CHOICE => {
+                    net.asking = [false; 2];
+                    let choice = story.file.scenes.get(f.a as usize).and_then(|s| s.choices.get(f.b as usize)).cloned();
+                    if let Some(choice) = choice {
+                        story.queue.clear();
+                        story.current = None;
+                        apply_choice(game, story, &choice);
+                    }
+                }
+                net::CMD_RESTART => restart(game),
+                _ => {}
+            }
+        }
+        if !net.paused.iter().chain(&net.asking).any(|x| *x) {
+            game.world.step(&[frames[0].input, frames[1].input], &game.tuning);
+            juice.events.extend(game.world.events.drain(..));
+            if let Some(to) = game.world.exit.take() {
+                goto_level(game, &to);
+            }
+        }
+        let frame = net.lock.frame - 1;
+        if frame % 30 == 0 {
+            let w = &game.world;
+            let mut h = w.tick;
+            for p in &w.players {
+                h = h.wrapping_mul(31).wrapping_add(p.x.to_bits()).wrapping_mul(31).wrapping_add(p.y.to_bits()).wrapping_add(p.hp as u32);
+            }
+            net.lock.note_hash(frame, h.wrapping_mul(31).wrapping_add(w.enemies.len() as u32));
+        }
+    }
+    if let Some(f) = net.lock.desync {
+        game.status = format!("THE TWO DECKS DISAGREE (since frame {f}). Restart from the pause menu on both.");
+    }
+}
+
+/// What an answer to a story choice does: set its flags, play a scene, leave for a level.
+fn apply_choice(game: &mut Game, story: &mut Story, choice: &Choice) {
+    story.ask = None;
+    for f in &choice.set {
+        if !story.flags.contains(f) {
+            story.flags.push(f.clone());
+        }
+    }
+    if !choice.goto.is_empty() {
+        match story.file.scenes.iter().find(|s| s.id == choice.goto).cloned() {
+            Some(scene) => play_scene(story, &scene),
+            None => game.status = format!("STORY: no scene called {}", choice.goto),
+        }
+    }
+    if !choice.level.is_empty() {
+        goto_level(game, &choice.level);
     }
 }
 
@@ -1093,18 +1180,24 @@ fn camera(
     mut layers: Query<(&BgLayer, &mut Transform, &mut Visibility), Without<ViewCam>>,
     mut juice: ResMut<Juice>,
     mut views: ResMut<Views>,
+    net: Res<net::Net>,
     mut base: Local<[Option<Vec2>; 2]>,
 ) {
     let Ok(win) = window.single() else { return };
     let w = &game.world;
     let a = fixed.overstep_fraction();
     let b: Rect = w.level.bounds;
-    let split = w.players.len() == 2 && views.want_split;
+    let split = w.players.len() == 2 && views.want_split && !net.on();
     views.split = split;
     let (pw, ph) = (win.physical_width().max(2), win.physical_height().max(2));
     juice.shake = (juice.shake - time.delta_secs() * 40.0).max(0.0);
     let at = |p: &sim::Player| Vec2::new(p.px + (p.x - p.px) * a, p.py + (p.y - p.py) * a);
     let up: Vec<&sim::Player> = w.players.iter().filter(|p| !p.down).collect();
+    // Two Decks: this one follows its own player (their partner while they are down).
+    let up = match w.players.get(net.lock.me).filter(|p| net.playing() && !p.down) {
+        Some(mine) => vec![mine],
+        None => up,
+    };
     for (vc, mut tf, mut cam) in &mut cams {
         let i = vc.0;
         if i == 1 {
@@ -1164,6 +1257,7 @@ fn hud(
     show: Res<ShowShapes>,
     stats: Res<Stats>,
     pause: Res<Pause>,
+    net: Res<net::Net>,
     pads: Query<(Entity, &Gamepad)>,
     mut text: Query<&mut Text, (With<Hud>, Without<ChooserText>)>,
     mut pick: Query<&mut Text, (With<ChooserText>, Without<Hud>)>,
@@ -1192,7 +1286,11 @@ fn hud(
                 Device::Pad(e) => format!("controller {}", pad_ids.iter().position(|p| *p == e).map(|i| i + 1).unwrap_or(0)),
             };
             if menu.step == 0 {
-                let n = if game.players == 1 { "[ 1 PLAYER ]     2 PLAYERS  " } else { "  1 PLAYER     [ 2 PLAYERS ]" };
+                let n = match (menu.two_decks, game.players) {
+                    (true, _) => "  1 PLAYER       2 PLAYERS, ONE SCREEN     [ 2 PLAYERS, TWO DECKS ]",
+                    (_, 1) => "[ 1 PLAYER ]     2 PLAYERS, ONE SCREEN       2 PLAYERS, TWO DECKS  ",
+                    _ => "  1 PLAYER     [ 2 PLAYERS, ONE SCREEN ]     2 PLAYERS, TWO DECKS  ",
+                };
                 format!("HOW MANY PLAYERS?\n\n{n}\n\nLeft / Right to choose, A to confirm\nWhoever confirms is player 1\n\n{}", menu.note)
             } else {
                 let (mine, theirs) = if skin.0 == 0 { ("SIMON", "CHARM") } else { ("CHARM", "SIMON") };
@@ -1207,12 +1305,18 @@ fn hud(
                     )
                 }
             }
+        } else if net.phase == net::Phase::Searching {
+            "LOOKING FOR THE OTHER DECK...\n\nOn the other Deck, start the game and choose TWO DECKS as well.\nBoth must be on the same network.\n\nB to cancel".to_string()
+        } else if net.playing() && net.silence() > 1.5 && !pause.open {
+            format!("WAITING FOR THE OTHER DECK... {:.0} s\n\nStart, then Players and characters, to leave", net.silence())
         } else if pause.open {
             let rows: Vec<String> = PAUSE_ITEMS.iter().enumerate().map(|(i, t)| if i == pause.at { format!("[ {t} ]") } else { format!("  {t}  ") }).collect();
             format!("PAUSED\n\n{}\n\nUp / Down to choose, A to confirm, B or Start to resume", rows.join("\n"))
         } else if let Some((choices, at)) = &story.ask {
             let row: Vec<String> = choices.iter().enumerate().map(|(i, c)| if i == *at { format!("[ {} ]", c.text) } else { format!("  {}  ", c.text) }).collect();
             format!("{}\n\nLeft / Right to choose, A to confirm", row.join("     "))
+        } else if net.playing() && net.paused.iter().any(|p| *p) {
+            "THE OTHER PLAYER HAS PAUSED".to_string()
         } else if game.world.players.iter().any(|q| q.combo >= 2) {
             format!("x{} COMBO", game.world.players.iter().map(|q| q.combo).max().unwrap_or(0))
         } else {
@@ -1236,8 +1340,8 @@ fn hotkeys(
     mut story: ResMut<Story>,
     mut held: Local<Vec<Entity>>,
     mut ask_held: Local<bool>,
-    mut pause: ResMut<Pause>,
-    mut pause_held: Local<bool>,
+    (mut pause, mut net): (ResMut<Pause>, ResMut<net::Net>),
+    (mut pause_held, mut told): (Local<bool>, Local<(bool, bool)>),
     mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -1263,22 +1367,38 @@ fn hotkeys(
             }
         }
         if let Some(choice) = picked {
-            story.ask = None;
-            for f in &choice.set {
-                if !story.flags.contains(f) {
-                    story.flags.push(f.clone());
+            if net.playing() {
+                // Both Decks must act on the answer at the same frame, so it travels with the buttons.
+                let scene = story.file.scenes.iter().position(|s| s.choices.iter().any(|c| c.text == choice.text && c.goto == choice.goto && c.level == choice.level));
+                let which = scene.and_then(|s| story.file.scenes[s].choices.iter().position(|c| c.text == choice.text));
+                if let (Some(s), Some(c)) = (scene, which) {
+                    net.lock.command(net::CMD_CHOICE, s as u8, c as u8);
+                    story.ask = None;
                 }
-            }
-            if !choice.goto.is_empty() {
-                match story.file.scenes.iter().find(|s| s.id == choice.goto).cloned() {
-                    Some(scene) => play_scene(&mut story, &scene),
-                    None => game.status = format!("STORY: no scene called {}", choice.goto),
-                }
-            }
-            if !choice.level.is_empty() {
-                goto_level(&mut game, &choice.level);
+            } else {
+                apply_choice(&mut game, &mut story, &choice);
             }
         }
+    }
+    // Two Decks: tell the other one when this player pauses or is looking at a story choice.
+    if net.playing() {
+        let me = net.lock.me;
+        if net.paused[me] != pause.open && *told != (pause.open, told.1) {
+            net.lock.command(net::CMD_PAUSE, pause.open as u8, 0);
+        }
+        let asking = story.ask.is_some();
+        if asking != told.1 {
+            net.lock.command(net::CMD_ASK, asking as u8, 0);
+        }
+        *told = (pause.open, asking);
+    } else {
+        *told = (false, false);
+    }
+    // Looking for the other Deck: B gives up.
+    if net.phase == net::Phase::Searching && (pad(GamepadButton::East) || keys.just_pressed(KeyCode::Backspace)) {
+        net.stop();
+        chooser.0 = true;
+        menu.step = 0;
     }
     // Start pauses. The pause menu reaches everything the keyboard keys did.
     let mut quit = false;
@@ -1302,8 +1422,10 @@ fn hotkeys(
             } else if pad(GamepadButton::South) {
                 pause.open = false;
                 match pause.at {
+                    1 if net.playing() => net.lock.command(net::CMD_RESTART, 0, 0),
                     1 => restart(&mut game),
                     2 => {
+                        net.stop();
                         chooser.0 = true;
                         menu.step = 0;
                         menu.note.clear();
@@ -1318,7 +1440,7 @@ fn hotkeys(
         }
     }
     // A player's controller was unplugged: stop and ask who is playing.
-    if game.players == 2 && !chooser.0 {
+    if game.players == 2 && !chooser.0 && !net.on() {
         for d in [menu.p1, menu.p2] {
             if let Device::Pad(e) = d {
                 if pads.get(e).is_err() {
@@ -1331,6 +1453,7 @@ fn hotkeys(
     }
     // Tab or the controller's Select / View button opens the start menu.
     if keys.just_pressed(KeyCode::Tab) || pad(GamepadButton::Select) {
+        net.stop();
         chooser.0 = !chooser.0;
         menu.step = 0;
         menu.note.clear();
@@ -1369,7 +1492,11 @@ fn hotkeys(
             if menu.step == 0 {
                 // Step 0: anyone may choose the number of players. Whoever confirms becomes player 1.
                 if left || right {
-                    game.players = 3 - game.players;
+                    // 1 player, 2 players on this screen, 2 players on two Decks.
+                    let at = if menu.two_decks { 2 } else { game.players as i32 - 1 };
+                    let to = (at + if right { 1 } else { 2 }) % 3;
+                    menu.two_decks = to == 2;
+                    game.players = if to == 1 { 2 } else { 1 };
                     menu.note.clear();
                 }
                 if ok {
@@ -1406,6 +1533,10 @@ fn hotkeys(
                 }
                 if ok {
                     chooser.0 = false;
+                    if menu.two_decks {
+                        net.search(skin.0 as u8, &game.level);
+                        menu.note = net.note.clone();
+                    }
                     break;
                 }
             }
@@ -1417,7 +1548,9 @@ fn hotkeys(
     if keys.just_pressed(KeyCode::F3) {
         show.0 = !show.0;
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    if keys.just_pressed(KeyCode::KeyR) && net.playing() {
+        net.lock.command(net::CMD_RESTART, 0, 0);
+    } else if keys.just_pressed(KeyCode::KeyR) {
         restart(&mut game);
     }
     if keys.just_pressed(KeyCode::Escape) || quit {
